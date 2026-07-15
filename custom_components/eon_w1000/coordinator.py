@@ -20,9 +20,13 @@ from .const import (
     CONF_IMAP_PASS,
     CONF_IMAP_PORT,
     CONF_IMAP_USER,
+    CONF_INITIAL_EXPORT,
+    CONF_INITIAL_IMPORT,
     CONF_POLL_INTERVAL,
     DEFAULT_EMAIL_SENDER,
     DEFAULT_EMAIL_SUBJECT,
+    DEFAULT_INITIAL_EXPORT,
+    DEFAULT_INITIAL_IMPORT,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     STATISTIC_EXPORT_ID,
@@ -68,6 +72,9 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             config_data.get(CONF_INITIAL_EXPORT, DEFAULT_INITIAL_EXPORT)
         )
 
+        # Track last processing time (only when emails were actually imported)
+        self._last_processing: datetime | None = None
+
     async def _async_setup(self) -> None:
         """Restore persisted processed UIDs."""
         stored = await self._store.async_load()
@@ -101,15 +108,20 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not emails:
             _LOGGER.debug("No new E.ON emails to process")
+            now = datetime.now(tz=self._tzinfo).isoformat()
             # On first run, return initial meter values so sensors show something
             if self.data is None or self.data.get("latest_import") is None:
                 return {
-                    "last_update": datetime.now(tz=self._tzinfo).isoformat(),
+                    "last_update": now,
+                    "last_processing": self._last_processing.isoformat() if self._last_processing else None,
                     "latest_import": self._initial_import,
                     "latest_export": self._initial_export,
                 }
-            # Keep existing data
-            return self.data
+            # Keep existing data, just update timestamp
+            data = dict(self.data)
+            data["last_update"] = now
+            data["last_processing"] = self._last_processing.isoformat() if self._last_processing else None
+            return data
 
         # Load current state from HA
         self._hass_import_statistics: list[dict[str, Any]] = []
@@ -135,7 +147,13 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not all_calculated:
             _LOGGER.warning("No valid data extracted from emails")
-            return {"last_update": datetime.now(tz=self._tzinfo).isoformat()}
+            now = datetime.now(tz=self._tzinfo).isoformat()
+            return {
+                "last_update": now,
+                "last_processing": self._last_processing.isoformat() if self._last_processing else None,
+                "latest_import": self._initial_import,
+                "latest_export": self._initial_export,
+            }
 
         # Deduplicate: merge all calculated rows, sort by start, keep last value per timestamp
         deduped: dict[str, dict[str, Any]] = {}
@@ -151,8 +169,12 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         latest_import = float(calculated[-1]["1_8_0"])
         latest_export = float(calculated[-1]["2_8_0"])
 
+        now = datetime.now(tz=self._tzinfo)
+        self._last_processing = now
+
         return {
-            "last_update": datetime.now(tz=self._tzinfo).isoformat(),
+            "last_update": now.isoformat(),
+            "last_processing": now.isoformat(),
             "import_stats": import_stats,
             "export_stats": export_stats,
             "latest_import": latest_import,

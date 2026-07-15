@@ -59,6 +59,12 @@
       },
       "grid_export": {
         "name": "Grid export"
+      },
+      "last_update": {
+        "name": "Last update"
+      },
+      "last_processing": {
+        "name": "Last processing"
       }
     }
   },

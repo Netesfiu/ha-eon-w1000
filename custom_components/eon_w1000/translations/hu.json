@@ -59,6 +59,12 @@
       },
       "grid_export": {
         "name": "Hálózati betáplálás"
+      },
+      "last_update": {
+        "name": "Utolsó lekérdezés"
+      },
+      "last_processing": {
+        "name": "Utolsó feldolgozás"
       }
     }
   },
