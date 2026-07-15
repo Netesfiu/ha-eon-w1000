@@ -26,9 +26,11 @@ DEFAULT_INITIAL_EXPORT = 0.0
 SENSOR_GRID_IMPORT = "grid_import"
 SENSOR_GRID_EXPORT = "grid_export"
 
-# Statistics
-STATISTIC_IMPORT_ID = "eon_w1000:grid_import"
-STATISTIC_EXPORT_ID = "eon_w1000:grid_export"
+# Statistics — must match HA's auto-generated statistic_id format.
+# For entity with unique_id "eon_w1000_grid_import", HA assigns:
+#   statistic_id = "eon_w1000:eon_w1000_grid_import"
+STATISTIC_IMPORT_ID = "eon_w1000:eon_w1000_grid_import"
+STATISTIC_EXPORT_ID = "eon_w1000:eon_w1000_grid_export"
 
 # Storage keys
 STORAGE_VERSION = 1

@@ -18,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import STATISTIC_EXPORT_ID, STATISTIC_IMPORT_ID
+from .const import DOMAIN
 
 if TYPE_CHECKING:
     from .coordinator import EonW1000Coordinator
@@ -26,16 +26,14 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True)
 class EonW1000SensorDescription(SensorEntityDescription):
-    """Description for E.ON W1000 energy sensors."""
+    """Description for E.ON W1000 sensors."""
 
-    statistic_id: str = ""
     data_key: str = ""
 
 
 ENERGY_SENSORS: tuple[EonW1000SensorDescription, ...] = (
     EonW1000SensorDescription(
         key="grid_import",
-        statistic_id=STATISTIC_IMPORT_ID,
         data_key="latest_import",
         translation_key="grid_import",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -44,7 +42,6 @@ ENERGY_SENSORS: tuple[EonW1000SensorDescription, ...] = (
     ),
     EonW1000SensorDescription(
         key="grid_export",
-        statistic_id=STATISTIC_EXPORT_ID,
         data_key="latest_export",
         translation_key="grid_export",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -89,6 +86,7 @@ async def async_setup_entry(
 class EonW1000Sensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
     """Sensor for E.ON W1000 energy meter readings."""
 
+    _attr_has_entity_name = True
     entity_description: EonW1000SensorDescription
 
     def __init__(
@@ -99,7 +97,7 @@ class EonW1000Sensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"eon_w1000_{description.key}"
+        self._attr_unique_id = f"{DOMAIN}_{description.key}"
 
     @property
     def native_value(self) -> float | None:
@@ -112,6 +110,7 @@ class EonW1000Sensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
 class EonW1000DiagSensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
     """Diagnostic sensor for E.ON W1000 timestamps."""
 
+    _attr_has_entity_name = True
     entity_description: EonW1000SensorDescription
 
     def __init__(
@@ -122,7 +121,7 @@ class EonW1000DiagSensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity)
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"eon_w1000_{description.key}"
+        self._attr_unique_id = f"{DOMAIN}_{description.key}"
 
     @property
     def native_value(self) -> datetime | None:
