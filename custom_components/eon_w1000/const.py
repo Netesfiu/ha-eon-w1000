@@ -1,7 +1,7 @@
 """Constants for E.ON W1000 integration."""
 
 DOMAIN = "eon_w1000"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["button", "sensor"]
 
 # Config entry keys
 CONF_IMAP_HOST = "imap_host"
