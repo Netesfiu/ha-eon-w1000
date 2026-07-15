@@ -44,17 +44,8 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Perform initial refresh
+    # Perform initial refresh (coordinator auto-pushes statistics)
     await coordinator.async_config_entry_first_refresh()
-
-    # Push initial statistics if data was loaded
-    await _push_statistics_if_needed(coordinator)
-
-    # After each refresh, push statistics
-    async def _on_refresh() -> None:
-        await _push_statistics_if_needed(coordinator)
-
-    entry.async_on_unload(coordinator.async_add_listener(_on_refresh))
 
     # Update listener for options changes
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -68,15 +59,6 @@ async def async_setup_entry(
     hass.services.async_register(DOMAIN, "process_now", _handle_process_now)
 
     return True
-
-
-async def _push_statistics_if_needed(coordinator: EonW1000Coordinator) -> None:
-    """Push statistics to recorder if new data is available."""
-    data = coordinator.data
-    if data and data.get("import_stats"):
-        await coordinator.async_push_statistics(
-            data["import_stats"], data["export_stats"]
-        )
 
 
 async def async_unload_entry(

@@ -88,9 +88,17 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch new emails, parse XLSX, push to recorder."""
         try:
-            return await self.hass.async_add_executor_job(
+            data = await self.hass.async_add_executor_job(
                 self._sync_update, self._force_refresh_latest
             )
+            # Schedule statistics push if new data was processed
+            if data.get("import_stats"):
+                self.hass.async_create_task(
+                    self.async_push_statistics(
+                        data["import_stats"], data["export_stats"]
+                    )
+                )
+            return data
         except Exception as err:
             raise UpdateFailed(f"Update failed: {err}") from err
         finally:

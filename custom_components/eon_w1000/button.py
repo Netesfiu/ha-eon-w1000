@@ -42,8 +42,4 @@ class EonW1000ProcessButton(CoordinatorEntity["EonW1000Coordinator"], ButtonEnti
         """Handle button press — fetch and process the latest email immediately."""
         self.coordinator._force_refresh_latest = True
         await self.coordinator.async_refresh()
-        data = self.coordinator.data
-        if data and data.get("import_stats"):
-            await self.coordinator.async_push_statistics(
-                data["import_stats"], data["export_stats"]
-            )
+        # Statistics push is handled automatically by the coordinator
