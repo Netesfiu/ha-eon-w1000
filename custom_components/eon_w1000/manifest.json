@@ -1,0 +1,13 @@
+{
+  "domain": "eon_w1000",
+  "name": "E.ON W1000 Energy Meter",
+  "codeowners": ["@netesfiu"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/Netesfiu/ha-eon-w1000",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Netesfiu/ha-eon-w1000/issues",
+  "requirements": ["openpyxl>=3.1.0", "beautifulsoup4>=4.12.0"],
+  "version": "0.1.0"
+}

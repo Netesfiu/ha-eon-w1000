@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "E.ON W1000 beállítás",
+        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.",
+        "data": {
+          "imap_host": "IMAP szerver",
+          "imap_port": "IMAP port",
+          "imap_user": "IMAP felhasználónév",
+          "imap_pass": "IMAP jelszó",
+          "poll_interval": "Lekérdezési intervallum (perc)",
+          "email_sender": "Email feladó szűrés",
+          "email_subject": "Email tárgy szűrés"
+        },
+        "data_description": {
+          "imap_host": "Pl. imap.gmail.com",
+          "imap_port": "Alapértelmezett: 993 (SSL)",
+          "poll_interval": "Milyen gyakran ellenőrizze az emaileket (alapértelmezett: 60 perc)",
+          "email_sender": "Csak ettől a feladótól érkező emaileket dolgozza fel",
+          "email_subject": "Csak ilyen tárgyú emaileket dolgozzon fel"
+        }
+      }
+    },
+    "error": {
+      "imap_connect": "Nem sikerült csatlakozni az IMAP szerverhez. Ellenőrizd a beállításokat.",
+      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót."
+    },
+    "abort": {
+      "already_configured": "Ez az IMAP fiók már be van állítva."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "E.ON W1000 beállítások",
+        "description": "Módosíthatod az integráció beállításait.",
+        "data": {
+          "imap_host": "IMAP szerver",
+          "imap_port": "IMAP port",
+          "imap_user": "IMAP felhasználónév",
+          "imap_pass": "IMAP jelszó",
+          "poll_interval": "Lekérdezési intervallum (perc)",
+          "email_sender": "Email feladó szűrés",
+          "email_subject": "Email tárgy szűrés"
+        }
+      }
+    }
+  }
+}
