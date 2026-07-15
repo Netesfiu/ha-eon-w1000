@@ -18,10 +18,14 @@ from .const import (
     CONF_IMAP_PASS,
     CONF_IMAP_PORT,
     CONF_IMAP_USER,
+    CONF_INITIAL_EXPORT,
+    CONF_INITIAL_IMPORT,
     CONF_POLL_INTERVAL,
     DEFAULT_EMAIL_SENDER,
     DEFAULT_EMAIL_SUBJECT,
     DEFAULT_IMAP_PORT,
+    DEFAULT_INITIAL_EXPORT,
+    DEFAULT_INITIAL_IMPORT,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
 )
@@ -38,6 +42,14 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): int,
         vol.Optional(CONF_EMAIL_SENDER, default=DEFAULT_EMAIL_SENDER): str,
         vol.Optional(CONF_EMAIL_SUBJECT, default=DEFAULT_EMAIL_SUBJECT): str,
+        vol.Optional(
+            CONF_INITIAL_IMPORT,
+            default=DEFAULT_INITIAL_IMPORT,
+        ): vol.Coerce(float),
+        vol.Optional(
+            CONF_INITIAL_EXPORT,
+            default=DEFAULT_INITIAL_EXPORT,
+        ): vol.Coerce(float),
     }
 )
 
@@ -150,6 +162,14 @@ class EonW1000OptionsFlow(config_entries.OptionsFlow):
                     CONF_EMAIL_SUBJECT,
                     default=options.get(CONF_EMAIL_SUBJECT, data.get(CONF_EMAIL_SUBJECT, DEFAULT_EMAIL_SUBJECT)),
                 ): str,
+                vol.Optional(
+                    CONF_INITIAL_IMPORT,
+                    default=options.get(CONF_INITIAL_IMPORT, data.get(CONF_INITIAL_IMPORT, DEFAULT_INITIAL_IMPORT)),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_INITIAL_EXPORT,
+                    default=options.get(CONF_INITIAL_EXPORT, data.get(CONF_INITIAL_EXPORT, DEFAULT_INITIAL_EXPORT)),
+                ): vol.Coerce(float),
             }
         )
 

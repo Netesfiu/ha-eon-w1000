@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "E.ON W1000 beállítás",
-        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.",
+        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.\n\n**Gmail használata esetén** [alkalmazás jelszót](https://support.google.com/accounts/answer/185833) kell használnod a normál jelszó helyett.",
         "data": {
           "imap_host": "IMAP szerver",
           "imap_port": "IMAP port",
@@ -11,20 +11,24 @@
           "imap_pass": "IMAP jelszó",
           "poll_interval": "Lekérdezési intervallum (perc)",
           "email_sender": "Email feladó szűrés",
-          "email_subject": "Email tárgy szűrés"
+          "email_subject": "Email tárgy szűrés",
+          "initial_import": "Kezdő mérőállás - vételezés (kWh)",
+          "initial_export": "Kezdő mérőállás - betáplálás (kWh)"
         },
         "data_description": {
           "imap_host": "Pl. imap.gmail.com",
           "imap_port": "Alapértelmezett: 993 (SSL)",
           "poll_interval": "Milyen gyakran ellenőrizze az emaileket (alapértelmezett: 60 perc)",
           "email_sender": "Csak ettől a feladótól érkező emaileket dolgozza fel",
-          "email_subject": "Csak ilyen tárgyú emaileket dolgozzon fel"
+          "email_subject": "Csak ilyen tárgyú emaileket dolgozzon fel",
+          "initial_import": "A mérőóra aktuális állása (1.8.0). Ha 0-n hagyod, az első emailből lesz beállítva.",
+          "initial_export": "A mérőóra aktuális állása (2.8.0). Ha 0-n hagyod, az első emailből lesz beállítva."
         }
       }
     },
     "error": {
       "imap_connect": "Nem sikerült csatlakozni az IMAP szerverhez. Ellenőrizd a beállításokat.",
-      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót."
+      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót. Gmail esetén alkalmazás jelszót használj: https://support.google.com/accounts/answer/185833"
     },
     "abort": {
       "already_configured": "Ez az IMAP fiók már be van állítva."
@@ -41,7 +45,9 @@
           "imap_pass": "IMAP jelszó",
           "poll_interval": "Lekérdezési intervallum (perc)",
           "email_sender": "Email feladó szűrés",
-          "email_subject": "Email tárgy szűrés"
+          "email_subject": "Email tárgy szűrés",
+          "initial_import": "Kezdő mérőállás - vételezés (kWh)",
+          "initial_export": "Kezdő mérőállás - betáplálás (kWh)"
         }
       }
     }

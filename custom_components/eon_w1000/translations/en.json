@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "E.ON W1000 Setup",
-        "description": "Enter your IMAP credentials to access E.ON portal export emails.",
+        "description": "Enter your IMAP credentials to access E.ON portal export emails.\n\n**If using Gmail**, you must use an [app password](https://support.google.com/accounts/answer/185833) instead of your regular password.",
         "data": {
           "imap_host": "IMAP server",
           "imap_port": "IMAP port",
@@ -11,20 +11,24 @@
           "imap_pass": "IMAP password",
           "poll_interval": "Poll interval (minutes)",
           "email_sender": "Email sender filter",
-          "email_subject": "Email subject filter"
+          "email_subject": "Email subject filter",
+          "initial_import": "Initial import meter reading (kWh)",
+          "initial_export": "Initial export meter reading (kWh)"
         },
         "data_description": {
           "imap_host": "e.g. imap.gmail.com",
           "imap_port": "Default: 993 (SSL)",
           "poll_interval": "How often to check for new emails (default: 60 min)",
           "email_sender": "Only process emails from this sender",
-          "email_subject": "Only process emails with this subject"
+          "email_subject": "Only process emails with this subject",
+          "initial_import": "Current meter reading (1.8.0). Leave at 0 to auto-detect from the first email.",
+          "initial_export": "Current meter reading (2.8.0). Leave at 0 to auto-detect from the first email."
         }
       }
     },
     "error": {
       "imap_connect": "Could not connect to IMAP server. Check your settings.",
-      "imap_auth": "Login failed. Check username and password."
+      "imap_auth": "Login failed. Check username and password. For Gmail use an app password: https://support.google.com/accounts/answer/185833"
     },
     "abort": {
       "already_configured": "This IMAP account is already configured."
@@ -41,7 +45,9 @@
           "imap_pass": "IMAP password",
           "poll_interval": "Poll interval (minutes)",
           "email_sender": "Email sender filter",
-          "email_subject": "Email subject filter"
+          "email_subject": "Email subject filter",
+          "initial_import": "Initial import meter reading (kWh)",
+          "initial_export": "Initial export meter reading (kWh)"
         }
       }
     }

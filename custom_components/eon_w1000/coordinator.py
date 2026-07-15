@@ -60,6 +60,14 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store = Store[dict[str, Any]](hass, STORAGE_VERSION, STORAGE_KEY)
         self._processed_uids: set[str] = set()
 
+        # Initial meter values from config
+        self._initial_import = float(
+            config_data.get(CONF_INITIAL_IMPORT, DEFAULT_INITIAL_IMPORT)
+        )
+        self._initial_export = float(
+            config_data.get(CONF_INITIAL_EXPORT, DEFAULT_INITIAL_EXPORT)
+        )
+
     async def _async_setup(self) -> None:
         """Restore persisted processed UIDs."""
         stored = await self._store.async_load()
@@ -93,7 +101,15 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not emails:
             _LOGGER.debug("No new E.ON emails to process")
-            return {"last_update": datetime.now(tz=self._tzinfo).isoformat()}
+            # On first run, return initial meter values so sensors show something
+            if self.data is None or self.data.get("latest_import") is None:
+                return {
+                    "last_update": datetime.now(tz=self._tzinfo).isoformat(),
+                    "latest_import": self._initial_import,
+                    "latest_export": self._initial_export,
+                }
+            # Keep existing data
+            return self.data
 
         # Load current state from HA
         self._hass_import_statistics: list[dict[str, Any]] = []

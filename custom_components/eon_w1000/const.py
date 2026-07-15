@@ -11,14 +11,16 @@ CONF_IMAP_PASS = "imap_pass"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_EMAIL_SENDER = "email_sender"
 CONF_EMAIL_SUBJECT = "email_subject"
-CONF_DAYS_BACK = "days_back"
+CONF_INITIAL_IMPORT = "initial_import"
+CONF_INITIAL_EXPORT = "initial_export"
 
 # Defaults
 DEFAULT_IMAP_PORT = 993
 DEFAULT_POLL_INTERVAL = 60  # minutes
 DEFAULT_EMAIL_SENDER = "noreply@eon.com"
 DEFAULT_EMAIL_SUBJECT = "[EON-W1000]"
-DEFAULT_DAYS_BACK = 7
+DEFAULT_INITIAL_IMPORT = 0.0
+DEFAULT_INITIAL_EXPORT = 0.0
 
 # Sensor IDs
 SENSOR_GRID_IMPORT = "grid_import"
