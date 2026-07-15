@@ -75,6 +75,9 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Track last processing time (only when emails were actually imported)
         self._last_processing: datetime | None = None
 
+        # Flag to force fetching the latest email (for manual button press)
+        self._force_refresh_latest: bool = False
+
     async def _async_setup(self) -> None:
         """Restore persisted processed UIDs."""
         stored = await self._store.async_load()
@@ -85,11 +88,15 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch new emails, parse XLSX, push to recorder."""
         try:
-            return await self.hass.async_add_executor_job(self._sync_update)
+            return await self.hass.async_add_executor_job(
+                self._sync_update, self._force_refresh_latest
+            )
         except Exception as err:
             raise UpdateFailed(f"Update failed: {err}") from err
+        finally:
+            self._force_refresh_latest = False
 
-    def _sync_update(self) -> dict[str, Any]:
+    def _sync_update(self, force_latest: bool = False) -> dict[str, Any]:
         """Synchronous update logic (runs in executor thread)."""
         client = ImapClient(
             host=self._config_data.get(CONF_IMAP_HOST, ""),
@@ -102,7 +109,11 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             client.connect()
-            emails = client.fetch_unseen_attachments()
+            if force_latest:
+                latest = client.fetch_latest_attachment()
+                emails = [latest] if latest else []
+            else:
+                emails = client.fetch_unseen_attachments()
         finally:
             client.disconnect()
 

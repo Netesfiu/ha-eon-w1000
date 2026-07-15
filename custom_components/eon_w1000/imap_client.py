@@ -157,5 +157,33 @@ class ImapClient:
             return True, "Sikeres kapcsolódás"
         except imaplib.IMAP4.error as e:
             return False, f"IMAP hiba: {e}"
-        except OSError as e:
-            return False, f"Kapcsolódási hiba: {e}"
+
+    def fetch_latest_attachment(self) -> dict[str, Any] | None:
+        """Fetch the LATEST email matching sender/subject (ignores SEEN flag).
+
+        Returns a single result dict (same shape as fetch_unseen_attachments items)
+        or None if no matching emails found.
+        """
+        self._ensure_connected()
+        assert self._conn is not None
+
+        search_criteria = f'(FROM "{self._sender_filter}" SUBJECT "{self._subject_filter}")'
+        _LOGGER.debug("IMAP search (latest): %s", search_criteria)
+
+        typ, data = self._conn.uid("SEARCH", None, search_criteria)
+        if typ != "OK":
+            _LOGGER.error("IMAP search failed: %s", typ)
+            return None
+
+        uid_str = data[0].decode() if data and data[0] else ""
+        if not uid_str.strip():
+            _LOGGER.debug("No E.ON emails found")
+            return None
+
+        # Get the latest UID
+        uids = uid_str.split()
+        latest_uid = uids[-1]
+        _LOGGER.info("Latest E.ON email: UID %s", latest_uid.decode() if isinstance(latest_uid, bytes) else latest_uid)
+
+        uid_str_clean = latest_uid.decode() if isinstance(latest_uid, bytes) else latest_uid
+        return self._fetch_and_save_attachments(uid_str_clean)

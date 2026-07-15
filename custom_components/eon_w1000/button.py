@@ -39,8 +39,9 @@ class EonW1000ProcessButton(CoordinatorEntity["EonW1000Coordinator"], ButtonEnti
         self._attr_unique_id = "eon_w1000_process_now"
 
     async def async_press(self) -> None:
-        """Handle button press — fetch and process emails immediately."""
-        await self.coordinator.async_request_refresh()
+        """Handle button press — fetch and process the latest email immediately."""
+        self.coordinator._force_refresh_latest = True
+        await self.coordinator.async_refresh()
         data = self.coordinator.data
         if data and data.get("import_stats"):
             await self.coordinator.async_push_statistics(
