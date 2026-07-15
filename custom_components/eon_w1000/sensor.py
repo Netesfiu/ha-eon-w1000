@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,14 +11,16 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import EonW1000ConfigEntry
 from .const import STATISTIC_EXPORT_ID, STATISTIC_IMPORT_ID
-from .coordinator import EonW1000Coordinator
+
+if TYPE_CHECKING:
+    from .coordinator import EonW1000Coordinator
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -52,7 +55,7 @@ SENSORS: tuple[EonW1000SensorDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: EonW1000ConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up E.ON W1000 sensors."""
@@ -63,14 +66,14 @@ async def async_setup_entry(
     )
 
 
-class EonW1000Sensor(CoordinatorEntity[EonW1000Coordinator], SensorEntity):
+class EonW1000Sensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
     """Sensor for E.ON W1000 energy meter readings."""
 
     entity_description: EonW1000SensorDescription
 
     def __init__(
         self,
-        coordinator: EonW1000Coordinator,
+        coordinator: EonW1000Coordinator,  # noqa: F821 — TYPE_CHECKING
         description: EonW1000SensorDescription,
     ) -> None:
         """Initialize the sensor."""
