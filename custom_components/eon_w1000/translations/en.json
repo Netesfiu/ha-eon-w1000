@@ -1,0 +1,65 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "E.ON W1000 Setup",
+        "description": "Enter your IMAP credentials to access E.ON portal export emails.",
+        "data": {
+          "imap_host": "IMAP server",
+          "imap_port": "IMAP port",
+          "imap_user": "IMAP username",
+          "imap_pass": "IMAP password",
+          "poll_interval": "Poll interval (minutes)",
+          "email_sender": "Email sender filter",
+          "email_subject": "Email subject filter"
+        },
+        "data_description": {
+          "imap_host": "e.g. imap.gmail.com",
+          "imap_port": "Default: 993 (SSL)",
+          "poll_interval": "How often to check for new emails (default: 60 min)",
+          "email_sender": "Only process emails from this sender",
+          "email_subject": "Only process emails with this subject"
+        }
+      }
+    },
+    "error": {
+      "imap_connect": "Could not connect to IMAP server. Check your settings.",
+      "imap_auth": "Login failed. Check username and password."
+    },
+    "abort": {
+      "already_configured": "This IMAP account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "E.ON W1000 Options",
+        "data": {
+          "imap_host": "IMAP server",
+          "imap_port": "IMAP port",
+          "imap_user": "IMAP username",
+          "imap_pass": "IMAP password",
+          "poll_interval": "Poll interval (minutes)",
+          "email_sender": "Email sender filter",
+          "email_subject": "Email subject filter"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "grid_import": {
+        "name": "Grid import"
+      },
+      "grid_export": {
+        "name": "Grid export"
+      }
+    }
+  },
+  "services": {
+    "process_now": {
+      "name": "Process now",
+      "description": "Immediately check for new emails and process energy data."
+    }
+  }
+}

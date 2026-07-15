@@ -1,0 +1,9 @@
+{
+  "name": "E.ON W1000 Energy Meter",
+  "content_in_root": false,
+  "country": ["HU"],
+  "homeassistant": "2024.1.0",
+  "render_readme": true,
+  "zip_release": false,
+  "filename": "custom_components/eon_w1000"
+}

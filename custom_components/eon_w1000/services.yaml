@@ -1,0 +1,4 @@
+process_now:
+  name: "Azonnali feldolgozás"
+  description: "Email fiók azonnali ellenőrzése és az adatok feldolgozása."
+  fields: {}

@@ -34,7 +34,6 @@
     "step": {
       "init": {
         "title": "E.ON W1000 beállítások",
-        "description": "Módosíthatod az integráció beállításait.",
         "data": {
           "imap_host": "IMAP szerver",
           "imap_port": "IMAP port",
@@ -45,6 +44,22 @@
           "email_subject": "Email tárgy szűrés"
         }
       }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "grid_import": {
+        "name": "Hálózati vételezés"
+      },
+      "grid_export": {
+        "name": "Hálózati betáplálás"
+      }
+    }
+  },
+  "services": {
+    "process_now": {
+      "name": "Azonnali feldolgozás",
+      "description": "Email fiók azonnali ellenőrzése és adatok feldolgozása."
     }
   }
 }
