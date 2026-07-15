@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "E.ON W1000 beállítás",
-        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.\n\n**Gmail használata esetén** [alkalmazás jelszót](https://support.google.com/accounts/answer/185833) kell használnod a normál jelszó helyett.",
+        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.\n\n**Gmail használata esetén** [alkalmazás jelszót](https://support.google.com/accounts/answer/185833) kell használnod a normál jelszó helyett. Alkalmazás jelszót itt hozhatsz létre: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)",
         "data": {
           "imap_host": "IMAP szerver",
           "imap_port": "IMAP port",
@@ -28,7 +28,7 @@
     },
     "error": {
       "imap_connect": "Nem sikerült csatlakozni az IMAP szerverhez. Ellenőrizd a beállításokat.",
-      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót. Gmail esetén alkalmazás jelszót használj: https://support.google.com/accounts/answer/185833"
+      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót. Gmail esetén alkalmazás jelszót használj: https://myaccount.google.com/apppasswords"
     },
     "abort": {
       "already_configured": "Ez az IMAP fiók már be van állítva."

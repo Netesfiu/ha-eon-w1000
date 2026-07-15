@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "E.ON W1000 Setup",
-        "description": "Enter your IMAP credentials to access E.ON portal export emails.\n\n**If using Gmail**, you must use an [app password](https://support.google.com/accounts/answer/185833) instead of your regular password.",
+        "description": "Enter your IMAP credentials to access E.ON portal export emails.\n\n**If using Gmail**, you must use an [app password](https://support.google.com/accounts/answer/185833) instead of your regular password. Create one at: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)",
         "data": {
           "imap_host": "IMAP server",
           "imap_port": "IMAP port",
@@ -28,7 +28,7 @@
     },
     "error": {
       "imap_connect": "Could not connect to IMAP server. Check your settings.",
-      "imap_auth": "Login failed. Check username and password. For Gmail use an app password: https://support.google.com/accounts/answer/185833"
+      "imap_auth": "Login failed. Check username and password. For Gmail use an app password: https://myaccount.google.com/apppasswords"
     },
     "abort": {
       "already_configured": "This IMAP account is already configured."
