@@ -1,10 +1,13 @@
 """XLSX parser for E.ON W1000 export files.
 
-Handles two E.ON export formats:
-1. NEW (2026+): 14-column format with embedded variable names and ISO timestamps
+Handles three E.ON export formats:
+1. NEW (2026+): 14-column wide format with embedded variable names and ISO timestamps
    Pod | Időbélyeg | Változó | Érték | Mértékegység | ... (×4 variable groups)
    
-2. LEGACY (pre-2026): 5-column format with Excel serial dates
+2. OLD-WIDE (2025): 5-column long format — one variable per row
+   POD | Változó | Időbélyeg | Mértékegység | Érték
+
+3. LEGACY (pre-2025): 5-column wide format with Excel serial dates
    Időbélyeg | Érték | Érték | Érték | Érték
    (time)    | +A    | -A    | 1.8.0 | 2.8.0
 
@@ -17,6 +20,7 @@ Processing:
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -86,15 +90,23 @@ def _round_hour(dt: datetime) -> datetime:
 
 
 def _detect_format(header: list[str]) -> str:
-    """Detect whether the XLSX uses the NEW (14-col) or LEGACY (5/6-col) format."""
-    # New format has 'Változó' columns
+    """Detect the XLSX format: 'new' (14-col wide), 'old_wide' (5-col long), or 'legacy' (5-col wide)."""
     valtozo_count = sum(1 for h in header if h == "Változó")
+    ertek_count = sum(1 for h in header if h == "Érték")
+    
+    # NEW: 14-column wide with 4 variable groups
     if valtozo_count >= 2:
         return "new"
-    # Legacy format has multiple 'Érték' columns directly
-    ertek_count = sum(1 for h in header if h == "Érték")
+    
+    # OLD-WIDE: 5-column long format — one variable per row
+    # Header: ['POD', 'Változó', 'Időbélyeg', 'Mértékegység', 'Érték']
+    if valtozo_count == 1 and ertek_count == 1:
+        return "old_wide"
+    
+    # LEGACY: 5-column wide with 4 Érték columns
     if ertek_count >= 4:
         return "legacy"
+    
     raise ValueError(
         f"Unrecognized E.ON XLSX format. Header: {header}"
     )
@@ -164,6 +176,79 @@ def _parse_new_format(
                 "m280": m280_val,
             }
         )
+
+    return pieces
+
+
+def _parse_old_wide_format(
+    rows_iter, header: list[str], tzinfo: timezone
+) -> list[dict[str, Any]]:
+    """Parse the OLD-WIDE (5-column long) E.ON export format.
+
+    One variable per row:
+    POD | Változó | Időbélyeg | Mértékegység | Érték
+
+    We need to pivot: group rows by timestamp to combine the 4 variables.
+    """
+    # Column indices
+    pod_col = next((i for i, h in enumerate(header) if h == "POD"), 0)
+    var_col = next((i for i, h in enumerate(header) if h == "Változó"), -1)
+    time_col = next((i for i, h in enumerate(header) if h == "Időbélyeg"), -1)
+    val_col = next((i for i, h in enumerate(header) if h == "Érték"), -1)
+
+    if var_col < 0 or time_col < 0 or val_col < 0:
+        raise ValueError(
+            f"Missing required columns in old-wide format. Header: {header}"
+        )
+
+    # Group rows by timestamp
+    by_timestamp: dict[str, dict[str, Any]] = {}
+    for row in rows_iter:
+        if len(row) <= max(var_col, time_col, val_col):
+            continue
+
+        raw_time = row[time_col]
+        raw_var = str(row[var_col]).strip() if row[var_col] else ""
+        raw_val = row[val_col]
+
+        if raw_time is None or not raw_var:
+            continue
+
+        dt = _parse_iso_timestamp(str(raw_time), tzinfo)
+        if dt is None:
+            continue
+
+        hour_key = _round_hour(dt).isoformat()
+        mapped = _VARIABLE_MAP.get(raw_var)
+
+        if hour_key not in by_timestamp:
+            by_timestamp[hour_key] = {
+                "start": _round_hour(dt),
+                "AP": None,
+                "AM": None,
+                "m180": None,
+                "m280": None,
+            }
+
+        if mapped == "AP":
+            current = by_timestamp[hour_key]["AP"]
+            val = _to_num(raw_val)
+            by_timestamp[hour_key]["AP"] = (current or 0.0) + val
+        elif mapped == "AM":
+            current = by_timestamp[hour_key]["AM"]
+            val = _to_num(raw_val)
+            by_timestamp[hour_key]["AM"] = (current or 0.0) + val
+        elif mapped == "m180":
+            by_timestamp[hour_key]["m180"] = _to_meter(raw_val)
+        elif mapped == "m280":
+            by_timestamp[hour_key]["m280"] = _to_meter(raw_val)
+
+    pieces: list[dict[str, Any]] = []
+    for ts in sorted(by_timestamp):
+        entry = by_timestamp[ts]
+        entry["AP"] = entry["AP"] or 0.0
+        entry["AM"] = entry["AM"] or 0.0
+        pieces.append(entry)
 
     return pieces
 
@@ -347,6 +432,8 @@ def parse_eon_xlsx(
 
     if fmt == "new":
         pieces = _parse_new_format(rows_iter, header, tzinfo)
+    elif fmt == "old_wide":
+        pieces = _parse_old_wide_format(rows_iter, header, tzinfo)
     else:
         pieces = _parse_legacy_format(rows_iter, header, tzinfo)
 
