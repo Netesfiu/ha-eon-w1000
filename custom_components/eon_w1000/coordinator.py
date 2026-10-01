@@ -39,7 +39,14 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .hourly import RunSelection, StatRow, accumulate, select_run, verify_chain
+from .hourly import (
+    Accumulation,
+    RunSelection,
+    StatRow,
+    accumulate,
+    select_run,
+    verify_chain,
+)
 from .imap_client import ImapClient, ImapError, MailAttachment, MailMessage
 from .parser import ParsedHour, parse_eon_xlsx
 
@@ -154,12 +161,18 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
                     meta=meta,
                 )
 
-            stats_import, totals_import = accumulate(selection, anchor_import, 0.0)
-            stats_export, totals_export = accumulate(selection, 0.0, anchor_export)
-            verify_chain(stats_import, selection, anchor_import)
+            accumulation: Accumulation = accumulate(
+                selection, anchor_import, anchor_export
+            )
+            # Check both chains: they differ whenever the channels do, and the
+            # export chain being the import chain is exactly what slipped through
+            # when only the import chain was verified.
+            verify_chain(accumulation.import_rows, selection, anchor_import, "import")
+            verify_chain(accumulation.export_rows, selection, anchor_export, "export")
+            totals = accumulation.totals
 
-            await self._push(STATISTIC_IMPORT_ID, stats_import)
-            await self._push(STATISTIC_EXPORT_ID, stats_export)
+            await self._push(STATISTIC_IMPORT_ID, accumulation.import_rows)
+            await self._push(STATISTIC_EXPORT_ID, accumulation.export_rows)
 
             imported_mails = meta.get("imported_mails") or []
             await self.hass.async_add_executor_job(self._acknowledge, imported_mails)
@@ -168,8 +181,8 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._state.update(
                 {
                     "last_processing": now.isoformat(),
-                    "latest_import": totals_import["import_total"],
-                    "latest_export": totals_export["export_total"],
+                    "latest_import": totals["import_total"],
+                    "latest_export": totals["export_total"],
                     "last_window_from": selection.first.isoformat(),
                     "last_window_to": selection.last.isoformat(),
                     "last_raw_m180": meta.get("raw_m180"),
@@ -183,17 +196,17 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(selection.hours),
                 selection.first,
                 selection.last,
-                totals_import["import_energy"],
-                totals_import["import_total"],
-                totals_export["export_energy"],
-                totals_export["export_total"],
+                totals["import_energy"],
+                totals["import_total"],
+                totals["export_energy"],
+                totals["export_total"],
             )
 
             return self._payload(
                 status=STATUS_OK,
                 skipped=selection.skipped,
                 meta=meta,
-                totals={**totals_import, **totals_export},
+                totals=totals,
             )
         finally:
             await self.hass.async_add_executor_job(shutil.rmtree, workdir, True)
@@ -202,7 +215,12 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Blocking helpers (executor thread)
     # ------------------------------------------------------------------ #
     def _collect(self, workdir: str, force: bool) -> tuple[RunSelection, dict[str, Any]]:
-        """Fetch mails, parse attachments, merge hours, pick the importable run."""
+        """Fetch mails, parse attachments, merge hours, pick the importable run.
+
+        ``force`` (the manual button) means *re-process the newest export*, so the
+        ledger must not skip it — otherwise the button cannot repair a window that
+        an earlier, broken run wrote, which is the one thing it is for.
+        """
         client = self._client()
         meta: dict[str, Any] = {}
         try:
@@ -221,7 +239,7 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
                 message = client.fetch_message(uid, workdir)
                 if message is None:
                     continue
-                if message.message_id in self._ledger:
+                if not force and message.message_id in self._ledger:
                     _LOGGER.debug("Skipping already processed mail %s", message.message_id)
                     meta.setdefault("known_mails", 0)
                     meta["known_mails"] += 1
@@ -378,7 +396,13 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return
 
-        _LOGGER.warning(
+        # The recorder registers its services late in startup, so an import that
+        # runs during startup legitimately takes this path: only warn when the
+        # recorder itself is missing, since then nothing will write the series.
+        log = _LOGGER.debug
+        if "recorder" not in self.hass.config.components:
+            log = _LOGGER.warning
+        log(
             "The recorder.import_statistics service is not registered; "
             "writing %s through the recorder API instead",
             statistic_id,

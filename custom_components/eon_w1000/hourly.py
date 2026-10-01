@@ -148,17 +148,35 @@ def select_run(hours: list[ParsedHour], expected_quarters: int) -> RunSelection:
     return selection
 
 
+#: Channel name -> the ``ParsedHour`` attribute carrying that channel's energy.
+CHANNELS = {"import": "ap", "export": "am"}
+
+
+@dataclass
+class Accumulation:
+    """The two hourly chains a run produces, plus its totals.
+
+    Each channel is accumulated from *its own* anchor.  A chain is a function of
+    one channel only: handing the same rows to both series is what wrote the
+    import chain (anchored at 0.0) into the export series on the first live run,
+    and a test that inspects a single chain cannot see that.
+    """
+
+    import_rows: list[StatRow]
+    export_rows: list[StatRow]
+    totals: dict[str, float]
+
+
 def accumulate(
     selection: RunSelection,
     anchor_import_kwh: float,
     anchor_export_kwh: float,
-) -> tuple[list[StatRow], dict[str, float]]:
-    """Accumulate the run from the preceding persisted hour, in integer Wh.
+) -> Accumulation:
+    """Accumulate both channels from the preceding persisted hour, in integer Wh.
 
-    Returns ``(stats, totals)`` where ``stats`` rows are shaped for
-    ``recorder.import_statistics`` with ``state == sum`` (the sensor's own value
-    at the *end* of the hour, which is what makes ``change`` for an hour equal to
-    that hour's energy).
+    The rows are shaped for ``recorder.import_statistics`` with ``state == sum``
+    (the sensor's own value at the *end* of the hour, which is what makes
+    ``change`` for an hour equal to that hour's energy).
     """
     if not selection.complete:
         raise ValueError("no importable hours")
@@ -166,17 +184,17 @@ def accumulate(
     running_import = int(round(anchor_import_kwh * 1000))
     running_export = int(round(anchor_export_kwh * 1000))
 
-    stats: list[StatRow] = []
+    import_rows: list[StatRow] = []
+    export_rows: list[StatRow] = []
     for hour in selection.hours:
         running_import += int(round((hour.ap or 0.0) * 1000))
         running_export += int(round((hour.am or 0.0) * 1000))
-        value = _kwh(running_import)
-        stats.append(
-            {
-                "start": hour.start.isoformat(),
-                "state": value,
-                "sum": value,
-            }
+        start = hour.start.isoformat()
+        import_rows.append(
+            {"start": start, "state": _kwh(running_import), "sum": _kwh(running_import)}
+        )
+        export_rows.append(
+            {"start": start, "state": _kwh(running_export), "sum": _kwh(running_export)}
         )
 
     totals = {
@@ -185,7 +203,9 @@ def accumulate(
         "import_energy": sum(int(round((h.ap or 0.0) * 1000)) for h in selection.hours) / 1000,
         "export_energy": sum(int(round((h.am or 0.0) * 1000)) for h in selection.hours) / 1000,
     }
-    return stats, totals
+    return Accumulation(
+        import_rows=import_rows, export_rows=export_rows, totals=totals
+    )
 
 
 def _kwh(wh: int) -> float:
@@ -198,19 +218,33 @@ def _kwh(wh: int) -> float:
     return round(wh / 1000, 3)
 
 
-def verify_chain(stats: list[StatRow], selection: RunSelection, anchor_import: float) -> None:
-    """Fail loudly if the produced chain is not exactly the source energies.
+def verify_chain(
+    rows: list[StatRow],
+    selection: RunSelection,
+    anchor_kwh: float,
+    channel: str = "import",
+) -> None:
+    """Fail loudly if a chain is not exactly that channel's energies.
 
-    Regression guard for the seam bug: every consecutive pair must differ by the
-    hour's +A/-A energy and the first row must differ from the anchor by the
-    first hour's energy.
+    Called once per channel.  Checking only one of them is not enough: the two
+    chains differ whenever the channels do, so a wrong (or mis-anchored) chain
+    shows up immediately, as does the seam bug this was written for — every
+    consecutive pair must differ by that hour's energy of *that* channel, and the
+    first row must differ from that channel's anchor by the first hour's energy.
     """
-    previous_import = int(round(anchor_import * 1000))
-    for row, hour in zip(stats, selection.hours):
+    if channel not in CHANNELS:
+        raise ValueError(f"unknown channel {channel!r}")
+    if len(rows) != len(selection.hours):
+        raise ValueError(
+            f"{channel} chain has {len(rows)} rows for {len(selection.hours)} hours"
+        )
+    attribute = CHANNELS[channel]
+    previous = int(round(anchor_kwh * 1000))
+    for row, hour in zip(rows, selection.hours):
         current = int(round(float(row["sum"]) * 1000))
-        expected = previous_import + int(round((hour.ap or 0.0) * 1000))
+        expected = previous + int(round((getattr(hour, attribute) or 0.0) * 1000))
         if current != expected:
             raise ValueError(
-                f"chain mismatch at {row['start']}: {current} != {expected} Wh"
+                f"{channel} chain mismatch at {row['start']}: {current} != {expected} Wh"
             )
-        previous_import = current
+        previous = current
