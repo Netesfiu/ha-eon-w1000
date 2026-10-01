@@ -2,36 +2,32 @@
   "config": {
     "step": {
       "user": {
-        "title": "E.ON W1000 beállítás",
-        "description": "Add meg az E.ON portálról érkező e-mailek eléréséhez szükséges IMAP adatokat.\n\n**Gmail használata esetén** [alkalmazás jelszót](https://support.google.com/accounts/answer/185833) kell használnod a normál jelszó helyett. Alkalmazás jelszót itt hozhatsz létre: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)",
+        "title": "E.ON W1000 export postafiók",
+        "description": "A portál ({portal_url}) az ütemezett XLSX exportot e-mailben küldi. Add meg az őt fogadó IMAP postafiókot. Tárgy szűrő: {subject}",
         "data": {
           "imap_host": "IMAP szerver",
           "imap_port": "IMAP port",
-          "imap_user": "IMAP felhasználónév",
-          "imap_pass": "IMAP jelszó",
-          "poll_interval": "Lekérdezési intervallum (perc)",
-          "email_sender": "Email feladó szűrés",
-          "email_subject": "Email tárgy szűrés",
-          "initial_import": "Kezdő mérőállás - vételezés (kWh)",
-          "initial_export": "Kezdő mérőállás - betáplálás (kWh)"
+          "imap_user": "Felhasználónév",
+          "imap_pass": "Jelszó",
+          "poll_interval": "Lekérdezési időköz (perc)",
+          "search_days": "Visszatekintés (nap)",
+          "email_sender": "Feladó szűrő",
+          "email_subject": "Tárgy szűrő"
         },
         "data_description": {
-          "imap_host": "Pl. imap.gmail.com",
-          "imap_port": "Alapértelmezett: 993 (SSL)",
-          "poll_interval": "Milyen gyakran ellenőrizze az emaileket (alapértelmezett: 60 perc)",
-          "email_sender": "Csak ettől a feladótól érkező emaileket dolgozza fel",
-          "email_subject": "Csak ilyen tárgyú emaileket dolgozzon fel",
-          "initial_import": "A mérőóra aktuális állása (1.8.0). Ha 0-n hagyod, az első emailből lesz beállítva.",
-          "initial_export": "A mérőóra aktuális állása (2.8.0). Ha 0-n hagyod, az első emailből lesz beállítva."
+          "imap_pass": "Gmail esetén alkalmazásjelszó szükséges.",
+          "search_days": "Mennyire visszamenőleg keresse az export leveleket. A már feldolgozott leveleket Message-ID alapján kihagyja, ezért rövidebb ablak is elég.",
+          "email_subject": "A portálon az ütemezett exporthoz ezt a tárgyat érdemes beállítani."
         }
       }
     },
     "error": {
-      "imap_connect": "Nem sikerült csatlakozni az IMAP szerverhez. Ellenőrizd a beállításokat.",
-      "imap_auth": "Sikertelen bejelentkezés. Ellenőrizd a felhasználónevet és jelszót. Gmail esetén alkalmazás jelszót használj: https://myaccount.google.com/apppasswords"
+      "imap_auth": "Sikertelen bejelentkezés: a szerver elutasította a felhasználónevet/jelszót (Gmailnél alkalmazásjelszó kell).",
+      "imap_connect": "Az IMAP szerver nem érhető el (cím, port, TLS vagy hálózat).",
+      "unknown": "Váratlan hiba, lásd a naplót."
     },
     "abort": {
-      "already_configured": "Ez az IMAP fiók már be van állítva."
+      "already_configured": "Ez a postafiók már be van állítva."
     }
   },
   "options": {
@@ -41,13 +37,15 @@
         "data": {
           "imap_host": "IMAP szerver",
           "imap_port": "IMAP port",
-          "imap_user": "IMAP felhasználónév",
-          "imap_pass": "IMAP jelszó",
-          "poll_interval": "Lekérdezési intervallum (perc)",
-          "email_sender": "Email feladó szűrés",
-          "email_subject": "Email tárgy szűrés",
-          "initial_import": "Kezdő mérőállás - vételezés (kWh)",
-          "initial_export": "Kezdő mérőállás - betáplálás (kWh)"
+          "imap_user": "Felhasználónév",
+          "imap_pass": "Jelszó (üresen hagyva marad a régi)",
+          "poll_interval": "Lekérdezési időköz (perc)",
+          "search_days": "Visszatekintés (nap)",
+          "email_sender": "Feladó szűrő",
+          "email_subject": "Tárgy szűrő"
+        },
+        "data_description": {
+          "imap_pass": "Hagyd üresen, ha nem akarod megváltoztatni a mentett jelszót."
         }
       }
     }
@@ -55,28 +53,92 @@
   "entity": {
     "sensor": {
       "grid_import": {
-        "name": "Hálózati vételezés"
+        "name": "Hálózati vételezés összesen",
+        "state_attributes": {
+          "statistic_id": {
+            "name": "Írt statisztika sorozat"
+          },
+          "raw_meter_register": {
+            "name": "Nyers 1.8.0 mérőállás"
+          },
+          "status": {
+            "name": "Utolsó futás állapota"
+          },
+          "last_processing": {
+            "name": "Utolsó sikeres import"
+          },
+          "last_window_from": {
+            "name": "Import ettől"
+          },
+          "last_window_to": {
+            "name": "Import eddig"
+          },
+          "skipped_hours": {
+            "name": "Kihagyott órák"
+          },
+          "skipped_detail": {
+            "name": "Kihagyás oka"
+          },
+          "last_error": {
+            "name": "Utolsó hiba"
+          },
+          "duplicate_hours": {
+            "name": "Kétértelmű órák"
+          }
+        }
       },
       "grid_export": {
-        "name": "Hálózati betáplálás"
+        "name": "Hálózati betáplálás összesen",
+        "state_attributes": {
+          "statistic_id": {
+            "name": "Írt statisztika sorozat"
+          },
+          "raw_meter_register": {
+            "name": "Nyers 2.8.0 mérőállás"
+          },
+          "status": {
+            "name": "Utolsó futás állapota"
+          },
+          "last_processing": {
+            "name": "Utolsó sikeres import"
+          },
+          "last_window_from": {
+            "name": "Import ettől"
+          },
+          "last_window_to": {
+            "name": "Import eddig"
+          },
+          "skipped_hours": {
+            "name": "Kihagyott órák"
+          },
+          "skipped_detail": {
+            "name": "Kihagyás oka"
+          },
+          "last_error": {
+            "name": "Utolsó hiba"
+          },
+          "duplicate_hours": {
+            "name": "Kétértelmű órák"
+          }
+        }
       },
       "last_update": {
-        "name": "Utolsó lekérdezés"
+        "name": "Utolsó postafiók-ellenőrzés"
       },
       "last_processing": {
-        "name": "Utolsó feldolgozás"
+        "name": "Utolsó sikeres import"
       }
     },
     "button": {
       "process_now": {
-        "name": "Feldolgozás most"
+        "name": "Export levél feldolgozása most"
       }
     }
   },
   "services": {
     "process_now": {
-      "name": "Azonnali feldolgozás",
-      "description": "Email fiók azonnali ellenőrzése és adatok feldolgozása."
+      "name": "Feldolgozás most",
+      "description": "Azonnali postafiók-ellenőrzés és a legfrissebb export levél importálása."
     }
   }
 }

@@ -1,15 +1,22 @@
-"""Config flow for E.ON W1000 integration."""
+"""Config and options flow for the E.ON W1000 integration."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_EMAIL_SENDER,
@@ -21,156 +28,153 @@ from .const import (
     CONF_INITIAL_EXPORT,
     CONF_INITIAL_IMPORT,
     CONF_POLL_INTERVAL,
+    CONF_SEARCH_DAYS,
     DEFAULT_EMAIL_SENDER,
     DEFAULT_EMAIL_SUBJECT,
     DEFAULT_IMAP_PORT,
     DEFAULT_INITIAL_EXPORT,
     DEFAULT_INITIAL_IMPORT,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_SEARCH_DAYS,
     DOMAIN,
 )
 from .imap_client import ImapClient
 
-_LOGGER = logging.getLogger(__name__)
+# Every imap_* code returned by ImapClient.test_connection() maps to the same
+# error key in strings.json.  The previous flow tried to detect a failed login
+# by searching the *localised* exception text for an English word, so on a
+# Hungarian Home Assistant a wrong password was reported as "unknown error".
+_ERROR_CODES = {"imap_auth", "imap_connect"}
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_IMAP_HOST): str,
-        vol.Required(CONF_IMAP_PORT, default=DEFAULT_IMAP_PORT): int,
-        vol.Required(CONF_IMAP_USER): str,
-        vol.Required(CONF_IMAP_PASS): str,
-        vol.Optional(CONF_POLL_INTERVAL, default=DEFAULT_POLL_INTERVAL): int,
-        vol.Optional(CONF_EMAIL_SENDER, default=DEFAULT_EMAIL_SENDER): str,
-        vol.Optional(CONF_EMAIL_SUBJECT, default=DEFAULT_EMAIL_SUBJECT): str,
-        vol.Optional(
-            CONF_INITIAL_IMPORT,
-            default=DEFAULT_INITIAL_IMPORT,
-        ): vol.Coerce(float),
-        vol.Optional(
-            CONF_INITIAL_EXPORT,
-            default=DEFAULT_INITIAL_EXPORT,
-        ): vol.Coerce(float),
+
+def _schema(defaults: dict[str, Any], *, with_password: bool = True) -> vol.Schema:
+    fields: dict[Any, Any] = {
+        vol.Required(CONF_IMAP_HOST, default=defaults.get(CONF_IMAP_HOST, "")): TextSelector(),
+        vol.Required(
+            CONF_IMAP_PORT, default=defaults.get(CONF_IMAP_PORT, DEFAULT_IMAP_PORT)
+        ): NumberSelector(
+            NumberSelectorConfig(min=1, max=65535, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required(CONF_IMAP_USER, default=defaults.get(CONF_IMAP_USER, "")): TextSelector(),
     }
-)
+    if with_password:
+        fields[vol.Required(CONF_IMAP_PASS)] = TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        )
+    fields[
+        vol.Optional(
+            CONF_POLL_INTERVAL, default=defaults.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        )
+    ] = NumberSelector(NumberSelectorConfig(min=5, max=1440, mode=NumberSelectorMode.BOX))
+    fields[
+        vol.Optional(CONF_SEARCH_DAYS, default=defaults.get(CONF_SEARCH_DAYS, DEFAULT_SEARCH_DAYS))
+    ] = NumberSelector(NumberSelectorConfig(min=1, max=60, mode=NumberSelectorMode.BOX))
+    fields[
+        vol.Optional(
+            CONF_EMAIL_SENDER, default=defaults.get(CONF_EMAIL_SENDER, DEFAULT_EMAIL_SENDER)
+        )
+    ] = TextSelector()
+    fields[
+        vol.Optional(
+            CONF_EMAIL_SUBJECT, default=defaults.get(CONF_EMAIL_SUBJECT, DEFAULT_EMAIL_SUBJECT)
+        )
+    ] = TextSelector()
+    return vol.Schema(fields)
 
 
-class EonW1000ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for E.ON W1000."""
+def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: (value.strip() if isinstance(value, str) else value)
+        for key, value in user_input.items()
+    }
 
-    VERSION = 1
-    MINOR_VERSION = 1
+
+async def _validate(hass, user_input: dict[str, Any]) -> str | None:
+    """Return an error code, or ``None`` when the mailbox is reachable."""
+    client = ImapClient(
+        host=user_input[CONF_IMAP_HOST],
+        port=int(user_input[CONF_IMAP_PORT]),
+        username=user_input[CONF_IMAP_USER],
+        password=user_input[CONF_IMAP_PASS],
+        sender_filter=user_input.get(CONF_EMAIL_SENDER, DEFAULT_EMAIL_SENDER),
+        subject_filter=user_input.get(CONF_EMAIL_SUBJECT, DEFAULT_EMAIL_SUBJECT),
+    )
+    ok, code = await hass.async_add_executor_job(client.test_connection)
+    return None if ok else code
+
+
+class EonW1000ConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Initial setup."""
+
+    VERSION = 2
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            user_input = _normalise(user_input)
+            unique_id = f"{user_input[CONF_IMAP_HOST]}:{user_input[CONF_IMAP_USER]}"
+            await self.async_set_unique_id(unique_id)
+            self._abort_if_unique_id_configured()
+            error = await _validate(self.hass, user_input)
+            if error is None:
+                return self.async_create_entry(
+                    title="E.ON W1000", data={**user_input, **self._bootstrap_defaults()}
+                )
+            errors["base"] = error
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_schema(user_input or {}),
+            errors=errors,
+            description_placeholders={
+                "portal_url": "https://e-portal.eon-hungaria.com/w1000",
+                "subject": DEFAULT_EMAIL_SUBJECT,
+            },
+        )
+
+    @staticmethod
+    def _bootstrap_defaults() -> dict[str, float]:
+        # Kept only so an existing entry keeps its keys; the cumulative series is
+        # anchored to the recorder, never seeded from these values.
+        return {
+            CONF_INITIAL_IMPORT: DEFAULT_INITIAL_IMPORT,
+            CONF_INITIAL_EXPORT: DEFAULT_INITIAL_EXPORT,
+        }
 
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
-        """Get the options flow for this handler."""
-        return EonW1000OptionsFlow(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return EonW1000OptionsFlow()
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle the initial step."""
+
+class EonW1000OptionsFlow(OptionsFlow):
+    """Change the poll interval, search window, filters or the mailbox password."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
-
+        current = {**self.config_entry.data, **self.config_entry.options}
         if user_input is not None:
-            # Test IMAP connection
-            try:
-                client = ImapClient(
-                    host=user_input[CONF_IMAP_HOST],
-                    port=user_input[CONF_IMAP_PORT],
-                    username=user_input[CONF_IMAP_USER],
-                    password=user_input[CONF_IMAP_PASS],
-                )
-                ok, msg = await self.hass.async_add_executor_job(
-                    client.test_connection
-                )
-                if not ok:
-                    if "auth" in msg.lower() or "login" in msg.lower():
-                        errors["base"] = "imap_auth"
-                    else:
-                        errors["base"] = "imap_connect"
-                    _LOGGER.warning("IMAP test failed: %s", msg)
-            except Exception as exc:
-                _LOGGER.exception("IMAP test exception")
-                errors["base"] = "imap_connect"
-            else:
-                # Check for duplicate entries
-                self._async_abort_entries_match(
-                    {
-                        CONF_IMAP_HOST: user_input[CONF_IMAP_HOST],
-                        CONF_IMAP_USER: user_input[CONF_IMAP_USER],
-                    }
-                )
-
-                return self.async_create_entry(
-                    title=f"E.ON W1000 ({user_input[CONF_IMAP_USER]})",
-                    data=user_input,
-                )
-
+            user_input = _normalise(user_input)
+            # An empty password field means "keep the stored one".
+            if not user_input.get(CONF_IMAP_PASS):
+                user_input.pop(CONF_IMAP_PASS, None)
+            merged = {**current, **user_input}
+            error = await _validate(self.hass, merged)
+            if error is None:
+                return self.async_create_entry(data=user_input)
+            errors["base"] = error
         return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            step_id="init",
+            data_schema=self._schema_with_optional_password(current),
             errors=errors,
         )
 
-
-class EonW1000OptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for E.ON W1000."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Manage the options."""
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
-
-        options = self._config_entry.options
-        data = self._config_entry.data
-
-        schema = vol.Schema(
+    @staticmethod
+    def _schema_with_optional_password(defaults: dict[str, Any]) -> vol.Schema:
+        schema = _schema(defaults, with_password=False)
+        return schema.extend(
             {
-                vol.Required(
-                    CONF_IMAP_HOST,
-                    default=options.get(CONF_IMAP_HOST, data.get(CONF_IMAP_HOST, "")),
-                ): str,
-                vol.Required(
-                    CONF_IMAP_PORT,
-                    default=options.get(CONF_IMAP_PORT, data.get(CONF_IMAP_PORT, DEFAULT_IMAP_PORT)),
-                ): int,
-                vol.Required(
-                    CONF_IMAP_USER,
-                    default=options.get(CONF_IMAP_USER, data.get(CONF_IMAP_USER, "")),
-                ): str,
-                vol.Required(
-                    CONF_IMAP_PASS,
-                    default=options.get(CONF_IMAP_PASS, data.get(CONF_IMAP_PASS, "")),
-                ): str,
-                vol.Optional(
-                    CONF_POLL_INTERVAL,
-                    default=options.get(CONF_POLL_INTERVAL, data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)),
-                ): int,
-                vol.Optional(
-                    CONF_EMAIL_SENDER,
-                    default=options.get(CONF_EMAIL_SENDER, data.get(CONF_EMAIL_SENDER, DEFAULT_EMAIL_SENDER)),
-                ): str,
-                vol.Optional(
-                    CONF_EMAIL_SUBJECT,
-                    default=options.get(CONF_EMAIL_SUBJECT, data.get(CONF_EMAIL_SUBJECT, DEFAULT_EMAIL_SUBJECT)),
-                ): str,
-                vol.Optional(
-                    CONF_INITIAL_IMPORT,
-                    default=options.get(CONF_INITIAL_IMPORT, data.get(CONF_INITIAL_IMPORT, DEFAULT_INITIAL_IMPORT)),
-                ): vol.Coerce(float),
-                vol.Optional(
-                    CONF_INITIAL_EXPORT,
-                    default=options.get(CONF_INITIAL_EXPORT, data.get(CONF_INITIAL_EXPORT, DEFAULT_INITIAL_EXPORT)),
-                ): vol.Coerce(float),
+                vol.Optional(CONF_IMAP_PASS): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                )
             }
         )
-
-        return self.async_show_form(step_id="init", data_schema=schema)

@@ -1,138 +1,145 @@
-"""Sensor platform for E.ON W1000 integration."""
+"""Sensors for the E.ON W1000 integration.
+
+The two energy sensors are *diagnostic views* of the imported series, not a
+second series of their own: the statistics the Energy dashboard consumes are
+imported into the existing ``sensor.grid_energy_import`` / ``..._export``
+series (see ``const.STATISTIC_IMPORT_ID``).  Giving these entities a
+``state_class`` as well would make the recorder start a *second*, competing
+statistics series for every value — which is exactly the duplicate-series mess
+this rework removes — so ``state_class`` is deliberately ``None`` and the
+interesting state (status, window, raw meter register, skips, errors) is exposed
+as attributes.
+
+The entity set (two energy sensors, two diagnostic timestamps) and every
+``unique_id`` are unchanged from the previous version, so the entity registry,
+dashboards and automations keep working across the upgrade.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import Any
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorEntityDescription,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
-
-if TYPE_CHECKING:
-    from .coordinator import EonW1000Coordinator
-
-
-@dataclass(frozen=True, kw_only=True)
-class EonW1000SensorDescription(SensorEntityDescription):
-    """Description for E.ON W1000 sensors."""
-
-    data_key: str = ""
-
-
-ENERGY_SENSORS: tuple[EonW1000SensorDescription, ...] = (
-    EonW1000SensorDescription(
-        key="grid_import",
-        data_key="latest_import",
-        translation_key="grid_import",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-    ),
-    EonW1000SensorDescription(
-        key="grid_export",
-        data_key="latest_export",
-        translation_key="grid_export",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-    ),
+from .const import (
+    DOMAIN,
+    SENSOR_GRID_EXPORT,
+    SENSOR_GRID_IMPORT,
+    SENSOR_LAST_PROCESSING,
+    SENSOR_LAST_UPDATE,
+    STATISTIC_EXPORT_ID,
+    STATISTIC_IMPORT_ID,
 )
+from .coordinator import EonW1000Coordinator
 
-DIAG_SENSORS: tuple[EonW1000SensorDescription, ...] = (
-    EonW1000SensorDescription(
-        key="last_update",
-        data_key="last_update",
-        translation_key="last_update",
-        device_class=SensorDeviceClass.TIMESTAMP,
-    ),
-    EonW1000SensorDescription(
-        key="last_processing",
-        data_key="last_processing",
-        translation_key="last_processing",
-        device_class=SensorDeviceClass.TIMESTAMP,
-    ),
+_ATTRIBUTE_KEYS = (
+    "status",
+    "last_update",
+    "last_processing",
+    "last_window_from",
+    "last_window_to",
+    "mails",
+    "hours_seen",
+    "hours_importable",
+    "skipped_hours",
+    "duplicate_hours",
+    "parse_failures",
+    "last_error",
 )
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up E.ON W1000 sensors."""
-    coordinator = entry.runtime_data
+    coordinator: EonW1000Coordinator = entry.runtime_data
+    async_add_entities(
+        [
+            EonW1000EnergySensor(coordinator, entry, SENSOR_GRID_IMPORT),
+            EonW1000EnergySensor(coordinator, entry, SENSOR_GRID_EXPORT),
+            EonW1000TimestampSensor(coordinator, entry, SENSOR_LAST_UPDATE),
+            EonW1000TimestampSensor(coordinator, entry, SENSOR_LAST_PROCESSING),
+        ]
+    )
 
-    entities: list[SensorEntity] = []
-    for desc in ENERGY_SENSORS:
-        entities.append(EonW1000Sensor(coordinator, desc))
-    for desc in DIAG_SENSORS:
-        entities.append(EonW1000DiagSensor(coordinator, desc))
 
-    async_add_entities(entities)
+def _device_info(entry: ConfigEntry) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="E.ON W1000",
+        manufacturer="E.ON",
+        model="W1000 portal export via IMAP",
+    )
 
 
-class EonW1000Sensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
-    """Sensor for E.ON W1000 energy meter readings."""
+class EonW1000EnergySensor(CoordinatorEntity[EonW1000Coordinator], SensorEntity):
+    """The last imported cumulative meter total, with import diagnostics."""
 
     _attr_has_entity_name = True
-    entity_description: EonW1000SensorDescription
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = None  # see module docstring: no second statistics series
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
-        self,
-        coordinator: EonW1000Coordinator,  # noqa: F821 — TYPE_CHECKING
-        description: EonW1000SensorDescription,
+        self, coordinator: EonW1000Coordinator, entry: ConfigEntry, key: str
     ) -> None:
-        """Initialize the sensor."""
         super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{DOMAIN}_{description.key}"
+        self._key = key
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_translation_key = key
+        self._attr_device_info = _device_info(entry)
+        self._value_key = (
+            "latest_import" if key == SENSOR_GRID_IMPORT else "latest_export"
+        )
+        self._register_key = "raw_m180" if key == SENSOR_GRID_IMPORT else "raw_m280"
+        self._statistic_id = (
+            STATISTIC_IMPORT_ID if key == SENSOR_GRID_IMPORT else STATISTIC_EXPORT_ID
+        )
 
     @property
     def native_value(self) -> float | None:
-        """Return the current meter reading."""
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get(self.entity_description.data_key)
-
-
-class EonW1000DiagSensor(CoordinatorEntity["EonW1000Coordinator"], SensorEntity):
-    """Diagnostic sensor for E.ON W1000 timestamps."""
-
-    _attr_has_entity_name = True
-    entity_description: EonW1000SensorDescription
-
-    def __init__(
-        self,
-        coordinator: EonW1000Coordinator,  # noqa: F821
-        description: EonW1000SensorDescription,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{DOMAIN}_{description.key}"
+        data: dict[str, Any] = self.coordinator.data or {}
+        value = data.get(self._value_key)
+        return round(float(value), 3) if isinstance(value, (int, float)) else None
 
     @property
-    def native_value(self) -> datetime | None:
-        """Return the timestamp."""
-        if self.coordinator.data is None:
-            return None
-        raw = self.coordinator.data.get(self.entity_description.data_key)
-        if raw is None:
-            return None
-        if isinstance(raw, datetime):
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data: dict[str, Any] = self.coordinator.data or {}
+        attributes: dict[str, Any] = {
+            "statistic_id": self._statistic_id,
+            "raw_meter_register": data.get(self._register_key),
+        }
+        for key in _ATTRIBUTE_KEYS:
+            attributes[key] = data.get(key)
+        attributes["skipped_detail"] = data.get("skipped_detail") or []
+        return attributes
+
+
+class EonW1000TimestampSensor(CoordinatorEntity[EonW1000Coordinator], SensorEntity):
+    """When the mailbox was last polled, and when the last import succeeded."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: EonW1000Coordinator, entry: ConfigEntry, key: str
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_translation_key = key
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> Any:
+        raw = (self.coordinator.data or {}).get(self._key)
+        if raw is None or not isinstance(raw, str):
             return raw
-        if isinstance(raw, str):
-            return datetime.fromisoformat(raw)
-        return None
+        return dt_util.parse_datetime(raw)

@@ -1,4 +1,3 @@
 process_now:
-  name: "Azonnali feldolgozás"
-  description: "Email fiók azonnali ellenőrzése és az adatok feldolgozása."
-  fields: {}
+  name: Process now
+  description: Check the mailbox immediately and import the newest E.ON W1000 export mail.
