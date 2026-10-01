@@ -69,7 +69,9 @@ def write_export(
                 for hour, channel in negative:
                     if moment.replace(minute=0) == hour.replace(minute=0) and channel == 0:
                         value = -value
-            feed_in = 0.0
+            # a non-zero, varying export channel: a fixture with a flat -A can
+            # hide a chain bug, because then the two chains differ in level only.
+            feed_in = 0.2 + 0.03 * ((day + quarter) % 5)
             register_cell: float | None = None
             if quarter == 0:
                 register_cell = register
@@ -143,7 +145,8 @@ def stamp_to_datetime(value: float | datetime) -> datetime:
 def load(path: Path):
     result = parser.parse_eon_xlsx(str(path), TZ)
     selection = hourly.select_run(result.hours, result.expected_quarters)
-    stats, totals = hourly.accumulate(selection, 41000.0, 0.0)
+    acc = hourly.accumulate(selection, 41000.0, 0.0)
+    stats, totals = acc.import_rows, acc.totals
     return result, selection, stats, totals
 
 
@@ -175,7 +178,7 @@ def test_anchor_accumulation_is_exact_and_idempotent(tmp_path: Path) -> None:
     reloaded = parser.parse_eon_xlsx(str(path), TZ)
     again = hourly.accumulate(
         hourly.select_run(reloaded.hours, reloaded.expected_quarters), 41000.0, 0.0
-    )[0]
+    ).import_rows
     assert again == stats
 
 
@@ -298,7 +301,8 @@ def test_repeated_dst_hour_is_reported_and_energy_is_kept(tmp_path: Path) -> Non
     )
     result = parser.parse_eon_xlsx(str(path), TZ)
     selection = hourly.select_run(result.hours, result.expected_quarters)
-    stats, totals = hourly.accumulate(selection, 41000.0, 0.0)
+    acc = hourly.accumulate(selection, 41000.0, 0.0)
+    stats, totals = acc.import_rows, acc.totals
     assert len(selection.duplicates) == 1, "the ambiguous hour must be reported"
     assert selection.duplicates[0].hour == 2
     # every quarter-hour row is still counted: nothing is dropped or zeroed
@@ -317,7 +321,7 @@ def test_whole_first_hour_missing_does_not_shift_the_series(tmp_path: Path) -> N
     selection = hourly.select_run(result.hours, result.expected_quarters)
     assert selection.first == datetime(2026, 9, 23, 1, tzinfo=TZ)
     assert selection.anchor_hour == datetime(2026, 9, 23, 0, tzinfo=TZ)
-    stats, _ = hourly.accumulate(selection, 41000.0, 0.0)
+    stats = hourly.accumulate(selection, 41000.0, 0.0).import_rows
     assert stats[0]["start"].startswith("2026-09-23T01:00")
 
 
@@ -335,6 +339,37 @@ def test_missing_export_channel_defaults_to_zero_with_a_warning(tmp_path: Path) 
     assert selection.missing_export_channel is True
     assert len(selection.hours) == 24
     assert all(hour.am == 0.0 for hour in selection.hours)
+
+
+def test_the_two_chains_are_independent(tmp_path: Path) -> None:
+    """The export series must get the -A chain, not the +A chain.
+
+    On the first live run both series received the *import* chain (the export one
+    anchored at 0.0), so the export series was a 0-based copy of the import
+    series.  A test that checks one chain cannot see that; both are checked here,
+    each against its own anchor, and a chain handed to the wrong channel must be
+    rejected before anything is written.
+    """
+    path = write_export(tmp_path / "both.xlsx", days=2)
+    result = parser.parse_eon_xlsx(str(path), TZ)
+    selection = hourly.select_run(result.hours, result.expected_quarters)
+    acc = hourly.accumulate(selection, 41000.0, 3000.0)
+
+    hourly.verify_chain(acc.import_rows, selection, 41000.0, "import")
+    hourly.verify_chain(acc.export_rows, selection, 3000.0, "export")
+    assert acc.import_rows[0]["start"] == acc.export_rows[0]["start"]
+    assert acc.import_rows[-1]["sum"] != acc.export_rows[-1]["sum"], (
+        "the two channels must produce different chains"
+    )
+    assert abs(acc.export_rows[-1]["sum"] - (3000.0 + acc.totals["export_energy"])) < 0.01
+    assert abs(acc.import_rows[-1]["sum"] - (41000.0 + acc.totals["import_energy"])) < 0.01
+
+    try:
+        hourly.verify_chain(acc.import_rows, selection, 3000.0, "export")
+    except ValueError as error:
+        assert "export chain mismatch" in str(error)
+    else:
+        raise AssertionError("the import chain passed off as the export chain was accepted")
 
 
 if __name__ == "__main__":  # pragma: no cover
