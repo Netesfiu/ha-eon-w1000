@@ -1,37 +1,47 @@
 """XLSX parser for E.ON W1000 export files.
 
-Handles three E.ON export formats:
-1. NEW (2026+): 14-column wide format with embedded variable names and ISO timestamps
-   Pod | Időbélyeg | Változó | Érték | Mértékegység | ... (×4 variable groups)
-   
-2. OLD-WIDE (2025): 5-column long format — one variable per row
-   POD | Változó | Időbélyeg | Mértékegység | Érték
+Handles the three known E.ON export formats:
 
+1. NEW (2026+): 14-column wide format, embedded variable names, ISO timestamps
+   ``Pod | Időbélyeg | Változó | Érték | Mértékegység`` (x4 variable groups)
+2. OLD-WIDE (2025): 5-column long format, one variable per row, pivot needed
+   ``POD | Változó | Időbélyeg | Mértékegység | Érték``
 3. LEGACY (pre-2025): 5-column wide format with Excel serial dates
-   Időbélyeg | Érték | Érték | Érték | Érték
-   (time)    | +A    | -A    | 1.8.0 | 2.8.0
+   ``Időbélyeg | Érték | Érték | Érték | Érték`` (+A, -A, 1.8.0, 2.8.0)
 
-Processing:
-- 15-min to hourly aggregation of +A/-A values
-- Meter reading (1.8.0/2.8.0) forward/backward reconstruction
-- Output suitable for HA recorder.import_statistics
+Output contract — deliberately *lossless*:
+
+* A value that is absent in the file stays ``None``.  It is never converted to
+  ``0.0``: a missing quarter-hour reading must not become a plausible-looking
+  zero-consumption interval.  (The previous importer rejected such hours; this
+  parser preserves the distinction so the caller can reject them too.)
+* Every hour carries the number of quarter-hour slots it actually contained, so
+  the caller can tell a complete hour from a truncated one.
+* The raw meter registers (1.8.0 / 2.8.0) are returned for diagnostics and
+  cross-checking only.  Cumulative statistics are *not* derived from them — a
+  file only ever covers a rolling window, so its registers cannot anchor a
+  series that is already persisted in the recorder.
+
+The module imports nothing from Home Assistant so it can be unit-tested
+standalone.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, tzinfo as _tzinfo
+from typing import Any, Iterable, Iterator
 
 import openpyxl
 
 _LOGGER = logging.getLogger(__name__)
 
-# Excel epoch: December 30, 1899 (Excel's Lotus 1-2-3 compatibility bug)
+# Excel epoch: December 30, 1899 (Excel keeps Lotus 1-2-3's leap-year bug).
 EXCEL_EPOCH = datetime(1899, 12, 30)
 
-# Variable name mappings (recognize both old and new naming)
+# Variable name mappings (the exports have used both spellings).
 _VARIABLE_MAP = {
     "+A": "AP",
     "-A": "AM",
@@ -39,424 +49,317 @@ _VARIABLE_MAP = {
     "DP_1-1:2.8.0*0": "m280",
 }
 
-
-def _to_num(value: Any, default: float = 0.0) -> float:
-    """Safely convert a cell value to float. Returns default on failure."""
-    if value is None:
-        return default
-    s = str(value).strip().replace(",", ".")
-    if s == "" or s.lower() == "none":
-        return default
-    try:
-        n = float(s)
-        return n if n == n else default  # NaN check
-    except (ValueError, TypeError):
-        return default
+_MISSING_TOKENS = {"", "none", "null", "nan", "-", "n/a", "na"}
 
 
-def _to_meter(value: Any) -> float | None:
-    """Convert a cell value to meter reading float. Returns None if not a valid meter value."""
-    if value is None:
+@dataclass
+class ParsedHour:
+    """One hourly bucket as read from a single file."""
+
+    start: datetime
+    ap: float | None = None
+    am: float | None = None
+    pieces: int = 0
+    ap_count: int = 0
+    am_count: int = 0
+    m180: float | None = None
+    m280: float | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        return self.ap is not None and self.am is not None
+
+
+@dataclass
+class ParseResult:
+    """The result of parsing one XLSX attachment."""
+
+    hours: list[ParsedHour] = field(default_factory=list)
+    export_format: str = "unknown"
+    piece_count: int = 0
+    expected_quarters: int = 0
+
+    @property
+    def first(self) -> datetime | None:
+        return self.hours[0].start if self.hours else None
+
+    @property
+    def last(self) -> datetime | None:
+        return self.hours[-1].start if self.hours else None
+
+    @property
+    def m180(self) -> float | None:
+        """Last raw 1.8.0 register seen in the file (diagnostics only)."""
+        for hour in reversed(self.hours):
+            if hour.m180 is not None:
+                return hour.m180
         return None
-    s = str(value).strip().replace(",", ".")
-    if s == "" or s.lower() == "none":
+
+    @property
+    def m280(self) -> float | None:
+        """Last raw 2.8.0 register seen in the file (diagnostics only)."""
+        for hour in reversed(self.hours):
+            if hour.m280 is not None:
+                return hour.m280
         return None
-    try:
-        n = float(s)
-        return n if n == n else None
-    except (ValueError, TypeError):
-        return None
 
 
-def _parse_iso_timestamp(raw: str, tzinfo: timezone) -> datetime | None:
-    """Parse ISO-format timestamp like '2026-07-07 00:00:00' or '2026-07-07T00:00:00'."""
-    raw = str(raw).strip()
-    if not raw:
-        return None
-    # Try space-separated format (as in new E.ON exports)
-    try:
-        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        try:
-            dt = datetime.fromisoformat(raw)
-        except ValueError:
-            return None
-    return dt.replace(tzinfo=tzinfo)
+# --------------------------------------------------------------------------- #
+# Cell conversion
+# --------------------------------------------------------------------------- #
+def to_float(value: Any) -> float | None:
+    """Convert a cell to float, returning ``None`` for anything absent/invalid.
 
-
-def _round_hour(dt: datetime) -> datetime:
-    """Round down to the nearest hour."""
-    return dt.replace(minute=0, second=0, microsecond=0)
-
-
-def _detect_format(header: list[str]) -> str:
-    """Detect the XLSX format: 'new' (14-col wide), 'old_wide' (5-col long), or 'legacy' (5-col wide)."""
-    valtozo_count = sum(1 for h in header if h == "Változó")
-    ertek_count = sum(1 for h in header if h == "Érték")
-    
-    # NEW: 14-column wide with 4 variable groups
-    if valtozo_count >= 2:
-        return "new"
-    
-    # OLD-WIDE: 5-column long format — one variable per row
-    # Header: ['POD', 'Változó', 'Időbélyeg', 'Mértékegység', 'Érték']
-    if valtozo_count == 1 and ertek_count == 1:
-        return "old_wide"
-    
-    # LEGACY: 5-column wide with 4 Érték columns
-    if ertek_count >= 4:
-        return "legacy"
-    
-    raise ValueError(
-        f"Unrecognized E.ON XLSX format. Header: {header}"
-    )
-
-
-def _parse_new_format(
-    rows_iter, header: list[str], tzinfo: timezone
-) -> list[dict[str, Any]]:
-    """Parse the NEW (14-column) E.ON export format.
-
-    Columns: Pod | Időbélyeg | Változó | Érték | Mértékegység | ... (×4)
+    Handles the comma decimal separator used by the Hungarian exports without
+    destroying a thousands separator (``"1,234.5"`` keeps its point).
     """
-    # Build a map: variable name → value column index
-    var_cols: dict[str, int] = {}
-    for i, h in enumerate(header):
-        if h == "Változó" and i + 1 < len(header) and header[i + 1] == "Érték":
-            # We'll fill in the mapping from the first data row
-            pass
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+        return result if result == result and result not in (float("inf"), float("-inf")) else None
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "")
+    if text.lower() in _MISSING_TOKENS:
+        return None
+    if "," in text and "." not in text:
+        text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+    try:
+        result = float(text)
+    except (TypeError, ValueError):
+        return None
+    return result if result == result and result not in (float("inf"), float("-inf")) else None
 
-    # Actually, we need to read the first data row to learn the variable names
-    # Let's consume from rows_iter, checking each row
+
+def _round_hour(moment: datetime) -> datetime:
+    return moment.replace(minute=0, second=0, microsecond=0)
+
+
+def parse_timestamp(raw: Any, tzinfo: timezone) -> datetime | None:
+    """Parse a cell into an aware datetime, or ``None`` if it is not a timestamp.
+
+    The wall-clock value in the file is *local* time; ``tzinfo`` must therefore
+    be the Home Assistant configured zone for the interval in question.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        moment = raw
+        return moment if moment.tzinfo else moment.replace(tzinfo=tzinfo)
+    if isinstance(raw, (int, float)):
+        try:
+            return (EXCEL_EPOCH + timedelta(days=float(raw) + 1e-8)).replace(tzinfo=tzinfo)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=tzinfo)
+        except ValueError:
+            continue
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=tzinfo)
+    return moment
+
+
+# --------------------------------------------------------------------------- #
+# Format detection
+# --------------------------------------------------------------------------- #
+def detect_format(header: list[str]) -> str:
+    """Detect the export format from its header shape."""
+    valtozo = sum(1 for cell in header if cell == "Változó")
+    ertek = sum(1 for cell in header if cell == "Érték")
+    if valtozo >= 2:
+        return "new"
+    if valtozo == 1 and ertek == 1:
+        return "old_wide"
+    if ertek >= 4:
+        return "legacy"
+    raise ValueError(f"Unrecognized E.ON XLSX format. Header: {header}")
+
+
+# --------------------------------------------------------------------------- #
+# Per-format readers -> (hour, AP, AM, m180, m280) pieces
+# --------------------------------------------------------------------------- #
+def _read_new_format(rows: Iterator[tuple], header: list[str], tzinfo: timezone) -> list[dict[str, Any]]:
+    """14-column wide format: four variable groups per row."""
     pieces: list[dict[str, Any]] = []
-
-    for row in rows_iter:
+    for row in rows:
         if len(row) < 4:
             continue
-
-        # Column 1 is the timestamp
-        raw_time = row[1] if len(row) > 1 else None
-        if raw_time is None:
+        moment = parse_timestamp(row[1], tzinfo)
+        if moment is None:
             continue
-
-        dt = _parse_iso_timestamp(str(raw_time), tzinfo)
-        if dt is None:
-            continue
-
-        hour = _round_hour(dt)
-
-        # Walk through variable groups: columns 2/3, 5/6, 8/9, 11/12
-        ap_val: float = 0.0
-        am_val: float = 0.0
-        m180_val: float | None = None
-        m280_val: float | None = None
-
+        piece: dict[str, Any] = {
+            "start": _round_hour(moment),
+            "AP": None,
+            "AM": None,
+            "m180": None,
+            "m280": None,
+        }
         for var_col in (2, 5, 8, 11):
-            if var_col >= len(row) or var_col + 1 >= len(row):
+            if var_col + 1 >= len(row):
                 continue
-            var_name = str(row[var_col]).strip() if row[var_col] else ""
-            raw_value = row[var_col + 1] if var_col + 1 < len(row) else None
-
-            mapped = _VARIABLE_MAP.get(var_name)
-            if mapped == "AP":
-                ap_val = _to_num(raw_value)
-            elif mapped == "AM":
-                am_val = _to_num(raw_value)
-            elif mapped == "m180":
-                m180_val = _to_meter(raw_value)
-            elif mapped == "m280":
-                m280_val = _to_meter(raw_value)
-
-        pieces.append(
-            {
-                "start": hour,
-                "AP": ap_val,
-                "AM": am_val,
-                "m180": m180_val,
-                "m280": m280_val,
-            }
-        )
-
+            name = str(row[var_col]).strip() if row[var_col] else ""
+            target = _VARIABLE_MAP.get(name)
+            if target is None:
+                continue
+            piece[target] = to_float(row[var_col + 1])
+        pieces.append(piece)
     return pieces
 
 
-def _parse_old_wide_format(
-    rows_iter, header: list[str], tzinfo: timezone
-) -> list[dict[str, Any]]:
-    """Parse the OLD-WIDE (5-column long) E.ON export format.
-
-    One variable per row:
-    POD | Változó | Időbélyeg | Mértékegység | Érték
-
-    We need to pivot: group rows by timestamp to combine the 4 variables.
-    """
-    # Column indices
+def _read_old_wide_format(rows: Iterator[tuple], header: list[str], tzinfo: timezone) -> list[dict[str, Any]]:
+    """5-column long format: one variable per row, pivoted on the timestamp."""
     pod_col = next((i for i, h in enumerate(header) if h == "POD"), 0)
     var_col = next((i for i, h in enumerate(header) if h == "Változó"), -1)
     time_col = next((i for i, h in enumerate(header) if h == "Időbélyeg"), -1)
     val_col = next((i for i, h in enumerate(header) if h == "Érték"), -1)
-
-    if var_col < 0 or time_col < 0 or val_col < 0:
-        raise ValueError(
-            f"Missing required columns in old-wide format. Header: {header}"
-        )
-
-    # Group rows by timestamp
-    by_timestamp: dict[str, dict[str, Any]] = {}
-    for row in rows_iter:
-        if len(row) <= max(var_col, time_col, val_col):
-            continue
-
-        raw_time = row[time_col]
-        raw_var = str(row[var_col]).strip() if row[var_col] else ""
-        raw_val = row[val_col]
-
-        if raw_time is None or not raw_var:
-            continue
-
-        dt = _parse_iso_timestamp(str(raw_time), tzinfo)
-        if dt is None:
-            continue
-
-        hour_key = _round_hour(dt).isoformat()
-        mapped = _VARIABLE_MAP.get(raw_var)
-
-        if hour_key not in by_timestamp:
-            by_timestamp[hour_key] = {
-                "start": _round_hour(dt),
-                "AP": None,
-                "AM": None,
-                "m180": None,
-                "m280": None,
-            }
-
-        if mapped == "AP":
-            current = by_timestamp[hour_key]["AP"]
-            val = _to_num(raw_val)
-            by_timestamp[hour_key]["AP"] = (current or 0.0) + val
-        elif mapped == "AM":
-            current = by_timestamp[hour_key]["AM"]
-            val = _to_num(raw_val)
-            by_timestamp[hour_key]["AM"] = (current or 0.0) + val
-        elif mapped == "m180":
-            by_timestamp[hour_key]["m180"] = _to_meter(raw_val)
-        elif mapped == "m280":
-            by_timestamp[hour_key]["m280"] = _to_meter(raw_val)
+    if min(var_col, time_col, val_col) < 0:
+        raise ValueError(f"Missing required columns in old-wide format. Header: {header}")
+    del pod_col
 
     pieces: list[dict[str, Any]] = []
-    for ts in sorted(by_timestamp):
-        entry = by_timestamp[ts]
-        entry["AP"] = entry["AP"] or 0.0
-        entry["AM"] = entry["AM"] or 0.0
-        pieces.append(entry)
-
+    for row in rows:
+        if len(row) <= max(var_col, time_col, val_col):
+            continue
+        name = str(row[var_col]).strip() if row[var_col] else ""
+        target = _VARIABLE_MAP.get(name)
+        if target is None:
+            continue
+        moment = parse_timestamp(row[time_col], tzinfo)
+        if moment is None:
+            continue
+        pieces.append(
+            {
+                "start": _round_hour(moment),
+                "AP": to_float(row[val_col]) if target == "AP" else None,
+                "AM": to_float(row[val_col]) if target == "AM" else None,
+                "m180": to_float(row[val_col]) if target == "m180" else None,
+                "m280": to_float(row[val_col]) if target == "m280" else None,
+            }
+        )
     return pieces
 
 
-def _parse_legacy_format(
-    rows_iter, header: list[str], tzinfo: timezone
-) -> list[dict[str, Any]]:
-    """Parse the LEGACY (5-column) E.ON export format.
-
-    Columns: Időbélyeg | Érték | Érték | Érték | Érték
-              (time)   | +A    | -A    | 1.8.0 | 2.8.0
-    """
-    # Find column indices
-    time_col: int | None = None
-    value_cols: list[int] = []
-
-    for i, name in enumerate(header):
-        if name == "Időbélyeg":
-            time_col = i
-        elif name == "Érték":
-            value_cols.append(i)
-
+def _read_legacy_format(rows: Iterator[tuple], header: list[str], tzinfo: timezone) -> list[dict[str, Any]]:
+    """5-column wide format with Excel serial timestamps."""
+    time_col = next((i for i, h in enumerate(header) if h == "Időbélyeg"), None)
+    value_cols = [i for i, h in enumerate(header) if h == "Érték"]
     if time_col is None:
         raise ValueError("No 'Időbélyeg' column found in XLSX header")
-    if len(value_cols) != 4:
-        raise ValueError(
-            f"Expected 4 'Érték' columns, found {len(value_cols)}"
-        )
+    if len(value_cols) < 4:
+        raise ValueError(f"Expected 4 'Érték' columns, found {len(value_cols)}")
 
     pieces: list[dict[str, Any]] = []
-    for row in rows_iter:
+    for row in rows:
         if time_col >= len(row) or row[time_col] is None:
             continue
-
-        raw_time = row[time_col]
-        try:
-            if isinstance(raw_time, (int, float)):
-                # Excel serial date
-                corrected = float(raw_time) + 0.00000001
-                dt = EXCEL_EPOCH + timedelta(days=corrected)
-                dt = dt.replace(tzinfo=tzinfo)
-            elif isinstance(raw_time, datetime):
-                dt = raw_time
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=tzinfo)
-            else:
-                dt = _parse_iso_timestamp(str(raw_time), tzinfo)
-                if dt is None:
-                    continue
-        except (ValueError, TypeError, OSError):
+        moment = parse_timestamp(row[time_col], tzinfo)
+        if moment is None:
             continue
 
-        hour = _round_hour(dt)
-
-        ap = _to_num(row[value_cols[0]] if value_cols[0] < len(row) else None)
-        am = _to_num(row[value_cols[1]] if value_cols[1] < len(row) else None)
-        m180_raw = row[value_cols[2]] if value_cols[2] < len(row) else None
-        m280_raw = row[value_cols[3]] if value_cols[3] < len(row) else None
+        def cell(index: int) -> float | None:
+            column = value_cols[index]
+            return to_float(row[column]) if column < len(row) else None
 
         pieces.append(
             {
-                "start": hour,
-                "AP": ap,
-                "AM": am,
-                "m180": _to_meter(m180_raw),
-                "m280": _to_meter(m280_raw),
+                "start": _round_hour(moment),
+                "AP": cell(0),
+                "AM": cell(1),
+                "m180": cell(2),
+                "m280": cell(3),
             }
         )
-
     return pieces
 
 
-def _aggregate_and_reconstruct(
-    pieces: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Aggregate 15-min pieces to hourly, then reconstruct meter readings."""
-    if not pieces:
-        raise ValueError("No valid data rows found in XLSX file")
-
-    # --- Aggregate by hour ---
-    grouped: dict[datetime, dict[str, Any]] = {}
-    for p in pieces:
-        h = p["start"]
-        if h not in grouped:
-            grouped[h] = {
-                "start": h,
-                "AP": 0.0,
-                "AM": 0.0,
-                "m180": None,
-                "m280": None,
-            }
-        grouped[h]["AP"] += p["AP"]
-        grouped[h]["AM"] += p["AM"]
-        if p["m180"] is not None:
-            grouped[h]["m180"] = p["m180"]
-        if p["m280"] is not None:
-            grouped[h]["m280"] = p["m280"]
-
-    hours = sorted(grouped.values(), key=lambda x: x["start"])
-
-    # --- Forward pass: carry meter readings forward ---
-    last180: float | None = None
-    last280: float | None = None
-
-    for h in hours:
-        if h["m180"] is not None:
-            last180 = h["m180"]
-        if h["m280"] is not None:
-            last280 = h["m280"]
-
-        h["start180"] = last180
-        h["start280"] = last280
-
-        if last180 is not None:
-            last180 += h["AP"]
-        if last280 is not None:
-            last280 += h["AM"]
-
-    # --- Backward pass: reconstruct missing start-of-period values ---
-    for meter_key, field_key in [("start180", "AP"), ("start280", "AM")]:
-        first_idx = next(
-            (i for i, h in enumerate(hours) if h[meter_key] is not None), -1
-        )
-        if first_idx > 0:
-            base = hours[first_idx][meter_key]
-            for i in range(first_idx - 1, -1, -1):
-                h = hours[i]
-                base -= h[field_key]
-                h[meter_key] = base
-
-    # Final fallback: if still None, use 0
-    for h in hours:
-        if h["start180"] is None:
-            h["start180"] = 0.0
-        if h["start280"] is None:
-            h["start280"] = 0.0
-
-    # --- Build output ---
-    result: list[dict[str, Any]] = []
-    for h in hours:
-        result.append(
-            {
-                "start": h["start"].isoformat(),
-                "AP": f"{h['AP']:.3f}",
-                "AM": f"{h['AM']:.3f}",
-                "1_8_0": f"{h['start180']:.3f}",
-                "2_8_0": f"{h['start280']:.3f}",
-            }
-        )
-
-    _LOGGER.debug(
-        "Parsed %d 15-min pieces → %d hourly aggregates", len(pieces), len(result)
-    )
-    return result
+# --------------------------------------------------------------------------- #
+# Hourly aggregation
+# --------------------------------------------------------------------------- #
+def aggregate_hours(pieces: Iterable[dict[str, Any]]) -> list[ParsedHour]:
+    """Group 15-minute pieces into hourly buckets without inventing values."""
+    buckets: dict[datetime, ParsedHour] = {}
+    for piece in pieces:
+        start = piece["start"]
+        bucket = buckets.get(start)
+        if bucket is None:
+            bucket = buckets[start] = ParsedHour(start=start)
+        bucket.pieces += 1
+        for key, attribute in (("AP", "ap"), ("AM", "am"), ("m180", "m180"), ("m280", "m280")):
+            value = piece.get(key)
+            if value is None:
+                continue
+            if key in ("AP", "AM"):
+                current = getattr(bucket, attribute)
+                setattr(bucket, attribute, (current or 0.0) + value)
+                setattr(bucket, f"{key.lower()}_count", getattr(bucket, f"{key.lower()}_count") + 1)
+            else:
+                # A register is a point reading: keep the last one seen.
+                setattr(bucket, attribute, value)
+    return [buckets[key] for key in sorted(buckets)]
 
 
-# --- Public API ---
+def expected_quarters_per_hour(hours: list[ParsedHour]) -> int:
+    """Most frequent number of quarter-hour slots per hour in this file.
 
-
-def parse_eon_xlsx(
-    file_path: str, tzinfo: timezone | None = None
-) -> list[dict[str, Any]]:
-    """Parse E.ON W1000 XLSX export and return calculated hourly rows.
-
-    Auto-detects the export format (new 14-column or legacy 5-column).
-
-    Returns list of dicts with keys: start, AP, AM, 1_8_0, 2_8_0
-    Each row is an hourly aggregate with cumulative meter readings.
+    Used to tell "complete" from "truncated"; ties prefer the larger count.
     """
+    if not hours:
+        return 0
+    counts = Counter(hour.pieces for hour in hours)
+    return sorted(counts.items(), key=lambda item: (item[1], item[0]), reverse=True)[0][0]
+
+
+# --------------------------------------------------------------------------- #
+# Public API
+# --------------------------------------------------------------------------- #
+def parse_eon_xlsx(file_path: str, tzinfo: _tzinfo | None = None) -> ParseResult:
+    """Parse an E.ON W1000 export into hourly buckets (lossless about gaps)."""
     if tzinfo is None:
         tzinfo = datetime.now().astimezone().tzinfo
 
-    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-    sheet = wb.active
+    workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        sheet = workbook.active
+        rows = sheet.iter_rows(min_row=1, values_only=True)
+        header = [str(cell).strip() if cell is not None else "" for cell in next(rows, [])]
+        export_format = detect_format(header)
+        if export_format == "new":
+            pieces = _read_new_format(rows, header, tzinfo)
+        elif export_format == "old_wide":
+            pieces = _read_old_wide_format(rows, header, tzinfo)
+        else:
+            pieces = _read_legacy_format(rows, header, tzinfo)
+    finally:
+        workbook.close()
 
-    rows_iter = sheet.iter_rows(min_row=1, values_only=True)
-    header = [str(c).strip() if c else "" for c in next(rows_iter, [])]
+    hours = aggregate_hours(pieces)
+    if not hours:
+        raise ValueError("No valid data rows found in XLSX file")
 
-    fmt = _detect_format(header)
-    _LOGGER.debug("Detected E.ON XLSX format: %s (header: %s)", fmt, header)
-
-    if fmt == "new":
-        pieces = _parse_new_format(rows_iter, header, tzinfo)
-    elif fmt == "old_wide":
-        pieces = _parse_old_wide_format(rows_iter, header, tzinfo)
-    else:
-        pieces = _parse_legacy_format(rows_iter, header, tzinfo)
-
-    wb.close()
-
-    return _aggregate_and_reconstruct(pieces)
-
-
-def build_statistics_payload(
-    calculated: list[dict[str, Any]], meter_key: str
-) -> list[dict[str, Any]]:
-    """Build recorder.import_statistics stats array from calculated rows.
-
-    meter_key: '1_8_0' for import, '2_8_0' for export
-    """
-    stats = []
-    for row in calculated:
-        state = float(row[meter_key])
-        stats.append(
-            {
-                "start": row["start"],
-                "state": state,
-                "sum": state,
-            }
-        )
-    return stats
+    result = ParseResult(
+        hours=hours,
+        export_format=export_format,
+        piece_count=len(pieces),
+        expected_quarters=expected_quarters_per_hour(hours),
+    )
+    _LOGGER.debug(
+        "Parsed %s: format=%s pieces=%d hours=%d expected_quarters=%d",
+        file_path,
+        export_format,
+        result.piece_count,
+        len(hours),
+        result.expected_quarters,
+    )
+    return result

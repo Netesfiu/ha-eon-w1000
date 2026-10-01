@@ -1,76 +1,79 @@
-"""E.ON W1000 integration for Home Assistant.
+"""E.ON W1000 — import the portal's XLSX export mails into HA statistics.
 
-Fetches E.ON energy meter data from email XLSX attachments and imports
-them into Home Assistant's energy statistics.
+Replaces the previous external importer (n8n) with the same contract:
+
+* the hourly series written is ``sensor.grid_energy_import`` /
+  ``sensor.grid_energy_export`` (``source: recorder``) — the series the Energy
+  dashboard already points at, so nothing needs reconfiguring;
+* the cumulative value is anchored to the hour the recorder already holds
+  immediately before the imported window and accumulated in integer Wh from
+  there, which is what keeps an overlapping window from moving the seam;
+* a mail is only marked read *after* its hours have been imported, and the
+  search is a date range rather than ``UNSEEN``, so the read flag of the mailbox
+  can never decide whether data is imported.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN, PLATFORMS
 from .coordinator import EonW1000Coordinator
 
-if TYPE_CHECKING:
-    from homeassistant.helpers.typing import ConfigType
-
-    class EonW1000ConfigEntry(ConfigEntry):
-        """Typed config entry for E.ON W1000."""
-
-        runtime_data: EonW1000Coordinator
-
-
 _LOGGER = logging.getLogger(__name__)
 
+SERVICE_PROCESS_NOW = "process_now"
 
-async def async_setup(hass: HomeAssistant, config: "ConfigType") -> bool:
-    """Set up the E.ON W1000 component (YAML-based setup not supported)."""
+CONFIG_SCHEMA = vol.Schema({DOMAIN: vol.Schema({})}, extra=vol.ALLOW_EXTRA)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: "EonW1000ConfigEntry"
-) -> bool:
-    """Set up E.ON W1000 from a config entry."""
-    coordinator = EonW1000Coordinator(hass, entry.data)
-    await coordinator._async_setup()
-
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    coordinator = EonW1000Coordinator(hass, {**entry.data, **entry.options})
+    # Restore the processed-mail ledger before the first poll, otherwise every
+    # restart would re-import the whole search window.
+    await coordinator.async_setup()
+    await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Perform initial refresh (coordinator auto-pushes statistics)
-    await coordinator.async_config_entry_first_refresh()
+    async def _async_process_now(call: ServiceCall) -> None:
+        entry.async_create_task(hass, coordinator.async_import_now())
 
-    # Update listener for options changes
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    if not hass.services.has_service(DOMAIN, SERVICE_PROCESS_NOW):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PROCESS_NOW,
+            _async_process_now,
+            supports_response=SupportsResponse.NONE,
+        )
 
-    # Register services
-    async def _handle_process_now(call: ServiceCall) -> None:
-        """Manually trigger a data refresh."""
-        _LOGGER.info("Manual refresh triggered")
-        await coordinator.async_refresh()
-
-    hass.services.async_register(DOMAIN, "process_now", _handle_process_now)
-
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: "EonW1000ConfigEntry"
-) -> bool:
-    """Unload a config entry."""
-    hass.services.async_remove(DOMAIN, "process_now")
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded and not hass.config_entries.async_entries(DOMAIN):
+        hass.services.async_remove(DOMAIN, SERVICE_PROCESS_NOW)
+    return unloaded
 
 
-async def async_reload_entry(
-    hass: HomeAssistant, entry: "EonW1000ConfigEntry"
-) -> None:
-    """Reload config entry when options change."""
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Pick up changed options without a restart."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _entry_data(entry: ConfigEntry) -> dict[str, Any]:
+    return {**entry.data, **entry.options}

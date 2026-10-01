@@ -1,21 +1,74 @@
-"""IMAP client for fetching E.ON W1000 export emails."""
+"""IMAP client for E.ON W1000 export mails.
+
+Two rules this client exists for:
+
+* **Nothing is consumed before it is imported.**  The messages are only marked
+  ``\\Seen`` by an explicit :meth:`mark_seen` call *after* a successful import.
+  A parse or anchor failure therefore leaves the mail for the next poll instead
+  of losing the window forever.
+* **Read state is not a filter.**  Searching only for ``UNSEEN`` mail silently
+  loses data whenever any other consumer (an n8n Gmail trigger, a phone client)
+  marks the mail read first.  The search is a bounded date range, and duplicates
+  are filtered by ``Message-ID`` in the coordinator's ledger.
+"""
 
 from __future__ import annotations
 
 import email
 import imaplib
 import logging
+import os
 import tempfile
-from datetime import datetime, timezone
-from email.message import Message
+from dataclasses import dataclass, field
+from datetime import date
+from email.header import decode_header, make_header
 from pathlib import Path
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+_IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _imap_date(value: date) -> str:
+    return f"{value.day:02d}-{_IMAP_MONTHS[value.month - 1]}-{value.year}"
+
+
+@dataclass
+class MailAttachment:
+    """One saved attachment from one mail."""
+
+    filename: str
+    path: str
+    size: int
+
+
+@dataclass
+class MailMessage:
+    """A fetched E.ON export mail."""
+
+    uid: str
+    message_id: str
+    subject: str
+    date: str
+    attachments: list[MailAttachment] = field(default_factory=list)
+
+    @property
+    def has_attachments(self) -> bool:
+        return bool(self.attachments)
+
+
+class ImapError(Exception):
+    """Raised for a connection/login failure."""
+
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+
 
 class ImapClient:
-    """IMAP client for fetching E.ON export emails with XLSX attachments."""
+    """IMAP client for fetching E.ON export mails with XLSX attachments."""
 
     def __init__(
         self,
@@ -26,6 +79,7 @@ class ImapClient:
         *,
         sender_filter: str = "noreply@eon.com",
         subject_filter: str = "[EON-W1000]",
+        max_attachment_bytes: int = 25 * 1024 * 1024,
     ) -> None:
         self._host = host
         self._port = port
@@ -33,157 +87,157 @@ class ImapClient:
         self._password = password
         self._sender_filter = sender_filter
         self._subject_filter = subject_filter
+        self._max_attachment_bytes = max_attachment_bytes
         self._conn: imaplib.IMAP4_SSL | None = None
 
+    # ------------------------------------------------------------------ #
+    # Connection
+    # ------------------------------------------------------------------ #
     def connect(self) -> None:
-        """Connect and login to the IMAP server."""
-        _LOGGER.debug("Connecting to IMAP %s:%d", self._host, self._port)
-        self._conn = imaplib.IMAP4_SSL(self._host, self._port)
-        self._conn.login(self._username, self._password)
-        self._conn.select("INBOX")
+        """Connect, log in and select the INBOX."""
+        try:
+            self._conn = imaplib.IMAP4_SSL(self._host, self._port)
+        except OSError as err:
+            raise ImapError("connect", str(err)) from err
+        try:
+            self._conn.login(self._username, self._password)
+        except imaplib.IMAP4.error as err:
+            raise ImapError("auth", str(err)) from err
+        try:
+            self._conn.select("INBOX")
+        except imaplib.IMAP4.error as err:
+            raise ImapError("connect", str(err)) from err
 
     def disconnect(self) -> None:
-        """Logout and close the connection."""
         if self._conn is not None:
             try:
                 self._conn.logout()
-            except Exception:
+            except Exception:  # noqa: BLE001 - never mask the real error
                 pass
             self._conn = None
 
-    def _ensure_connected(self) -> None:
+    def test_connection(self) -> tuple[bool, str]:
+        """Return ``(ok, code)`` where code is a translation key, not prose."""
+        try:
+            connection = imaplib.IMAP4_SSL(self._host, self._port)
+        except OSError:
+            return False, "imap_connect"
+        try:
+            connection.login(self._username, self._password)
+        except imaplib.IMAP4.error:
+            return False, "imap_auth"
+        except OSError:
+            return False, "imap_connect"
+        try:
+            connection.select("INBOX")
+        except imaplib.IMAP4.error:
+            return False, "imap_connect"
+        finally:
+            try:
+                connection.logout()
+            except Exception:  # noqa: BLE001
+                pass
+        return True, "ok"
+
+    # ------------------------------------------------------------------ #
+    # Search / fetch
+    # ------------------------------------------------------------------ #
+    def build_criteria(self, since: date) -> str:
+        return (
+            f'(SINCE "{_imap_date(since)}" FROM "{self._sender_filter}" '
+            f'SUBJECT "{self._subject_filter}")'
+        )
+
+    def search_uids(self, since: date) -> list[str]:
+        """UIDs of matching mails since the given date (read state irrelevant)."""
         if self._conn is None:
             self.connect()
-
-    def fetch_unseen_attachments(self) -> list[dict[str, Any]]:
-        """Fetch unseen emails matching the sender/subject filters.
-
-        Returns list of dicts with keys:
-          - msg_id: IMAP message UID
-          - subject: email subject
-          - date: email date (ISO string)
-          - attachment_paths: list of paths to saved XLSX attachments
-        """
-        self._ensure_connected()
         assert self._conn is not None
+        criteria = self.build_criteria(since)
+        _LOGGER.debug("IMAP search: %s", criteria)
+        status, data = self._conn.uid("SEARCH", None, criteria)
+        if status != "OK":
+            raise ImapError("search", str(status))
+        raw = data[0].decode() if data and data[0] else ""
+        return raw.split()
 
-        # Search for unseen messages from the sender with the subject
-        search_criteria = f'(UNSEEN FROM "{self._sender_filter}" SUBJECT "{self._subject_filter}")'
-        _LOGGER.debug("IMAP search: %s", search_criteria)
-
-        typ, data = self._conn.uid("SEARCH", None, search_criteria)
-        if typ != "OK":
-            _LOGGER.error("IMAP search failed: %s", typ)
-            return []
-
-        uid_str = data[0].decode() if data and data[0] else ""
-        if not uid_str.strip():
-            _LOGGER.debug("No unseen E.ON emails found")
-            return []
-
-        uids = uid_str.split()
-        _LOGGER.info("Found %d unseen E.ON email(s)", len(uids))
-
-        results: list[dict[str, Any]] = []
-        for uid in uids:
-            result = self._fetch_and_save_attachments(uid.decode())
-            if result is not None and result["attachment_paths"]:
-                results.append(result)
-                # Mark as seen after processing
-                self._conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
-
-        return results
-
-    def _fetch_and_save_attachments(self, uid: str) -> dict[str, Any] | None:
-        """Fetch a single email by UID and save XLSX attachments to temp files."""
+    def fetch_message(self, uid: str, directory: str | None = None) -> MailMessage | None:
+        """Fetch one mail and save its XLSX attachments under ``directory``."""
+        if self._conn is None:
+            self.connect()
         assert self._conn is not None
-
-        typ, data = self._conn.uid("FETCH", uid, "(BODY.PEEK[])")
-        if typ != "OK" or not data or not data[0]:
+        status, data = self._conn.uid("FETCH", uid, "(BODY.PEEK[])")
+        if status != "OK" or not data or not isinstance(data[0], tuple):
+            _LOGGER.warning("Could not fetch mail uid=%s (%s)", uid, status)
             return None
 
-        # Parse the raw email
-        raw_email = data[0][1]
-        msg = email.message_from_bytes(raw_email)
+        raw = data[0][1]
+        if not isinstance(raw, (bytes, bytearray)):
+            return None
+        message = email.message_from_bytes(bytes(raw))
 
-        subject = str(email.header.decode_header(msg["Subject"] or "")[0][0] or "")
-        date_str = msg["Date"] or ""
+        message_id = (message.get("Message-ID") or "").strip() or f"uid:{uid}"
 
-        attachment_paths: list[str] = []
-        for part in msg.walk():
+        target_dir = directory or tempfile.mkdtemp(prefix="eon_w1000_")
+        attachments: list[MailAttachment] = []
+        for part in message.walk():
             if part.get_content_maintype() == "multipart":
                 continue
-
             filename = part.get_filename()
             if not filename:
                 continue
-
-            lower = filename.lower()
-            if not (lower.endswith(".xlsx") or lower.endswith(".xls")):
+            if not filename.lower().endswith((".xlsx", ".xls")):
                 continue
-
-            # Save to temp file
             payload = part.get_payload(decode=True)
             if not payload:
                 continue
-
-            suffix = Path(filename).suffix
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp.write(payload)
-            tmp.close()
-            attachment_paths.append(tmp.name)
-            _LOGGER.info(
-                "Saved attachment %s → %s (uid=%s)", filename, tmp.name, uid
+            if len(payload) > self._max_attachment_bytes:
+                _LOGGER.error(
+                    "Attachment %s from uid=%s is %d bytes; refusing to process",
+                    filename,
+                    uid,
+                    len(payload),
+                )
+                continue
+            handle, path = tempfile.mkstemp(
+                prefix="eon_w1000_", suffix=Path(filename).suffix, dir=target_dir
             )
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(payload)
+            attachments.append(MailAttachment(filename=filename, path=path, size=len(payload)))
+            _LOGGER.debug("Saved attachment %s -> %s (uid=%s)", filename, path, uid)
 
-        if not attachment_paths:
-            _LOGGER.debug("No XLSX attachment in email uid=%s", uid)
-            return None
+        return MailMessage(
+            uid=uid,
+            message_id=message_id,
+            subject=_decode_header(message.get("Subject")),
+            date=str(message.get("Date") or ""),
+            attachments=attachments,
+        )
 
-        return {
-            "msg_uid": uid,
-            "subject": subject,
-            "date": date_str,
-            "attachment_paths": attachment_paths,
-        }
-
-    def test_connection(self) -> tuple[bool, str]:
-        """Test if the IMAP connection works. Returns (success, message)."""
-        try:
-            conn = imaplib.IMAP4_SSL(self._host, self._port)
-            conn.login(self._username, self._password)
-            conn.select("INBOX")
-            conn.logout()
-            return True, "Sikeres kapcsolódás"
-        except imaplib.IMAP4.error as e:
-            return False, f"IMAP hiba: {e}"
-
-    def fetch_latest_attachment(self) -> dict[str, Any] | None:
-        """Fetch the LATEST email matching sender/subject (ignores SEEN flag).
-
-        Returns a single result dict (same shape as fetch_unseen_attachments items)
-        or None if no matching emails found.
-        """
-        self._ensure_connected()
+    def mark_seen(self, uids: list[str]) -> None:
+        """Flag mails as read. Only ever called after a successful import."""
+        if not uids:
+            return
+        if self._conn is None:
+            self.connect()
         assert self._conn is not None
+        for uid in uids:
+            try:
+                self._conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
+            except imaplib.IMAP4.error as err:
+                _LOGGER.warning("Could not mark uid=%s as seen: %s", uid, err)
 
-        search_criteria = f'(FROM "{self._sender_filter}" SUBJECT "{self._subject_filter}")'
-        _LOGGER.debug("IMAP search (latest): %s", search_criteria)
+    def latest_uid(self, since: date) -> str | None:
+        """Highest UID of the matching mails — used by the manual button."""
+        uids = self.search_uids(since)
+        return uids[-1] if uids else None
 
-        typ, data = self._conn.uid("SEARCH", None, search_criteria)
-        if typ != "OK":
-            _LOGGER.error("IMAP search failed: %s", typ)
-            return None
 
-        uid_str = data[0].decode() if data and data[0] else ""
-        if not uid_str.strip():
-            _LOGGER.debug("No E.ON emails found")
-            return None
-
-        # Get the latest UID
-        uids = uid_str.split()
-        latest_uid = uids[-1]
-        _LOGGER.info("Latest E.ON email: UID %s", latest_uid.decode() if isinstance(latest_uid, bytes) else latest_uid)
-
-        uid_str_clean = latest_uid.decode() if isinstance(latest_uid, bytes) else latest_uid
-        return self._fetch_and_save_attachments(uid_str_clean)
+def _decode_header(value: Any) -> str:
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(str(value))))
+    except (UnicodeDecodeError, LookupError, ValueError):
+        return str(value)
