@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import asdict
+from pathlib import Path
 import logging
 import shutil
 import tempfile
@@ -10,7 +13,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -40,12 +43,10 @@ from .const import (
     STORAGE_VERSION,
 )
 from .hourly import (
-    Accumulation,
     RunSelection,
     StatRow,
-    accumulate,
     select_run,
-    verify_chain,
+    source_history,
 )
 from .imap_client import ImapClient, ImapError, MailAttachment, MailMessage
 from .parser import ParsedHour, parse_eon_xlsx
@@ -74,6 +75,8 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(minutes=max(poll_minutes, 5)),
         )
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._source_hours: dict[datetime, ParsedHour] = {}
+        self._source_lock = asyncio.Lock()
         self._ledger: dict[str, str] = {}
         self._state: dict[str, Any] = {}
         self._force_refresh_latest = False
@@ -89,13 +92,18 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         stored = await self._store.async_load() or {}
         self._ledger = dict(stored.get("ledger") or {})
         self._state = dict(stored.get("state") or {})
+        for row in stored.get("source_hours", []):
+            hour = ParsedHour(**{**row, "start": dt_util.parse_datetime(row["start"])})
+            self._source_hours[hour.start] = hour
         _LOGGER.debug("Restored %d ledger entries", len(self._ledger))
 
     async def _async_save(self) -> None:
         if len(self._ledger) > LEDGER_MAX_ENTRIES:
             for key in sorted(self._ledger, key=self._ledger.get)[: len(self._ledger) - LEDGER_MAX_ENTRIES]:
                 self._ledger.pop(key, None)
-        await self._store.async_save({"ledger": self._ledger, "state": self._state})
+        await self._store.async_save({"ledger": self._ledger, "state": self._state,
+            "source_hours": [{**asdict(h), "start": h.start.isoformat()}
+                             for h in self._source_hours.values()]})
 
     # ------------------------------------------------------------------ #
     # Public helpers
@@ -120,6 +128,10 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Coordinator entry point
     # ------------------------------------------------------------------ #
     async def _async_update_data(self) -> dict[str, Any]:
+        async with self._source_lock:
+            return await self._async_update_source()
+
+    async def _async_update_source(self) -> dict[str, Any]:
         force = self._force_refresh_latest
         self._force_refresh_latest = False
 
@@ -138,78 +150,91 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
                     error=f"IMAP {err.code}: {err.detail}",
                 )
 
-            if not selection.hours:
-                return self._payload(
-                    status=STATUS_NO_DATA,
-                    error=meta.get("error"),
-                    skipped=selection.skipped,
-                    meta=meta,
-                )
-
-            anchor_import, anchor_export, anchor_error = await self._read_anchor(selection)
-            if anchor_error:
-                _LOGGER.error(
-                    "Refusing to import %s..%s: %s",
-                    selection.first,
-                    selection.last,
-                    anchor_error,
-                )
-                return self._payload(
-                    status=STATUS_NO_ANCHOR,
-                    error=anchor_error,
-                    skipped=selection.skipped,
-                    meta=meta,
-                )
-
-            accumulation: Accumulation = accumulate(
-                selection, anchor_import, anchor_export
-            )
-            # Check both chains: they differ whenever the channels do, and the
-            # export chain being the import chain is exactly what slipped through
-            # when only the import chain was verified.
-            verify_chain(accumulation.import_rows, selection, anchor_import, "import")
-            verify_chain(accumulation.export_rows, selection, anchor_export, "export")
-            totals = accumulation.totals
-
-            await self._push(STATISTIC_IMPORT_ID, accumulation.import_rows)
-            await self._push(STATISTIC_EXPORT_ID, accumulation.export_rows)
-
-            imported_mails = meta.get("imported_mails") or []
-            await self.hass.async_add_executor_job(self._acknowledge, imported_mails)
-
-            now = dt_util.now()
-            self._state.update(
-                {
-                    "last_processing": now.isoformat(),
-                    "latest_import": totals["import_total"],
-                    "latest_export": totals["export_total"],
-                    "last_window_from": selection.first.isoformat(),
-                    "last_window_to": selection.last.isoformat(),
-                    "last_raw_m180": meta.get("raw_m180"),
-                    "last_raw_m280": meta.get("raw_m280"),
-                }
-            )
-            await self._async_save()
-
-            _LOGGER.info(
-                "Imported %d hourly statistics for %s..%s (%d..%d kWh import, %d..%d kWh export)",
-                len(selection.hours),
-                selection.first,
-                selection.last,
-                totals["import_energy"],
-                totals["import_total"],
-                totals["export_energy"],
-                totals["export_total"],
-            )
-
-            return self._payload(
-                status=STATUS_OK,
-                skipped=selection.skipped,
-                meta=meta,
-                totals=totals,
-            )
+            return await self._import_selection(selection, meta)
         finally:
             await self.hass.async_add_executor_job(shutil.rmtree, workdir, True)
+
+    async def _import_selection(self, selection, meta):
+        # Persist source material first so interrupted writes can be replayed.
+        await self._async_save()
+        if not selection.hours:
+            return self._payload(
+                status=STATUS_NO_DATA,
+                error=meta.get("error"),
+                skipped=selection.skipped,
+                meta=meta,
+            )
+
+        accumulation = source_history(selection)
+        totals = accumulation.totals
+
+        await self._push(STATISTIC_IMPORT_ID, accumulation.import_rows)
+        await self._push(STATISTIC_EXPORT_ID, accumulation.export_rows)
+
+        imported_mails = meta.get("imported_mails") or []
+        await self.hass.async_add_executor_job(self._acknowledge, imported_mails)
+
+        now = dt_util.now()
+        self._state.update(
+            {
+                "last_processing": now.isoformat(),
+                "latest_import": totals["import_total"],
+                "latest_export": totals["export_total"],
+                "last_window_from": selection.first.isoformat(),
+                "last_window_to": selection.last.isoformat(),
+                "last_raw_m180": meta.get("raw_m180"),
+                "last_raw_m280": meta.get("raw_m280"),
+            }
+        )
+        await self._async_save()
+
+        _LOGGER.info(
+            "Imported %d hourly statistics for %s..%s (%d..%d kWh import, %d..%d kWh export)",
+            len(selection.hours),
+            selection.first,
+            selection.last,
+            totals["import_energy"],
+            totals["import_total"],
+            totals["export_energy"],
+            totals["export_total"],
+        )
+
+        return self._payload(
+            status=STATUS_OK,
+            skipped=selection.skipped,
+            meta=meta,
+            totals=totals,
+        )
+    async def async_import_files(self, paths: list[str]) -> dict[str, Any]:
+        """Backfill local XLSX files using the same source archive as mail."""
+        async with self._source_lock:
+            selection, meta = await self.hass.async_add_executor_job(self._collect_files, paths)
+            result = await self._import_selection(selection, meta)
+            self.async_set_updated_data(result)
+            return result
+
+    def _collect_files(self, paths):
+        hours = dict(self._source_hours)
+        meta = {}
+        for path in paths:
+            self._ingest(MailAttachment(filename=Path(path).name, path=path, size=Path(path).stat().st_size), hours, meta)
+        return self._select_source(hours, meta), meta
+
+    def _select_source(self, hours, meta):
+        self._source_hours = hours
+        ordered = sorted(hours.values(), key=lambda hour: hour.start)
+        selection = select_run(ordered, 4)
+        meta["hours_seen"] = len(ordered)
+        meta["hours_importable"] = len(selection.hours)
+        meta.setdefault("parse_failures", 0)
+        # Registers come from the archive as a whole, so a file backfill reports
+        # them exactly like the mail path does.
+        meta["raw_m180"] = _last_register(hours, "m180")
+        meta["raw_m280"] = _last_register(hours, "m280")
+        if len(selection.hours) != len(ordered) or selection.duplicates:
+            meta["error"] = "Excel archive has a gap, incomplete or ambiguous hour; supply complete overlapping files"
+            return RunSelection(skipped=selection.skipped)
+        return selection
 
     # ------------------------------------------------------------------ #
     # Blocking helpers (executor thread)
@@ -252,44 +277,18 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not messages:
                 return RunSelection(), {"mails": 0}
 
-            hours: dict[datetime, ParsedHour] = {}
-            expected = 1
+            hours: dict[datetime, ParsedHour] = dict(self._source_hours)
             imported_mails: list[dict[str, str]] = []
-            parse_failures = 0
             for message in messages:
                 parsed_any = False
                 for attachment in message.attachments:
-                    if self._ingest(attachment, hours, meta):
-                        parsed_any = True
-                        expected = max(expected, int(meta.get("expected_quarters") or 1))
-                    else:
-                        parse_failures += 1
+                    parsed_any = self._ingest(attachment, hours, meta) or parsed_any
                 if parsed_any:
                     imported_mails.append({"uid": message.uid, "message_id": message.message_id})
 
-            meta["parse_failures"] = parse_failures
             meta["imported_mails"] = imported_mails
-            meta["expected_quarters"] = expected
-            meta["raw_m180"] = _last_register(hours, "m180")
-            meta["raw_m280"] = _last_register(hours, "m280")
 
-            ordered = [hours[key] for key in sorted(hours)]
-            selection = select_run(ordered, expected)
-            meta["hours_seen"] = len(ordered)
-            meta["hours_importable"] = len(selection.hours)
-            meta["duplicate_hours"] = len(selection.duplicates)
-            if selection.duplicates:
-                _LOGGER.warning(
-                    "Ambiguous hour(s) in this export (more quarter-hour rows than a "
-                    "normal hour): %s",
-                    ", ".join(m.isoformat() for m in selection.duplicates[:5]),
-                )
-            if not selection.complete:
-                meta["error"] = (
-                    "no complete contiguous hour in the export"
-                    if ordered
-                    else "no hourly data in the export"
-                )
+            selection = self._select_source(hours, meta)
             return selection, meta
         finally:
             client.disconnect()
@@ -302,6 +301,7 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:  # noqa: BLE001 - reported, mail stays unread
             _LOGGER.error("Failed to parse %s: %s", attachment.filename, err)
             meta.setdefault("parse_errors", []).append(f"{attachment.filename}: {err}")
+            meta["parse_failures"] = int(meta.get("parse_failures") or 0) + 1
             return False
         meta["expected_quarters"] = max(int(meta.get("expected_quarters") or 1), result.expected_quarters)
         for hour in result.hours:
@@ -333,43 +333,6 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------ #
     # Recorder interaction
     # ------------------------------------------------------------------ #
-    async def _read_anchor(
-        self, selection: RunSelection
-    ) -> tuple[float, float, str | None]:
-        """Read the hour the recorder already holds immediately before the run."""
-        anchor_hour = selection.anchor_hour
-        assert anchor_hour is not None
-        response = await self.hass.services.async_call(
-            "recorder",
-            "get_statistics",
-            {
-                "start_time": anchor_hour.isoformat(),
-                "end_time": (anchor_hour + timedelta(hours=1)).isoformat(),
-                "statistic_ids": [STATISTIC_IMPORT_ID, STATISTIC_EXPORT_ID],
-                "period": "hour",
-                "types": ["sum"],
-            },
-            blocking=True,
-            return_response=True,
-        )
-        statistics = (response or {}).get("statistics") or {}
-
-        values: list[float] = []
-        for statistic_id in (STATISTIC_IMPORT_ID, STATISTIC_EXPORT_ID):
-            rows = [
-                row
-                for row in statistics.get(statistic_id, [])
-                if dt_util.parse_datetime(str(row.get("start"))) == anchor_hour
-            ]
-            if len(rows) != 1 or rows[0].get("sum") is None:
-                return 0.0, 0.0, (
-                    f"no unique hour stored for {statistic_id} at {anchor_hour.isoformat()} "
-                    f"({len(rows)} matching rows) — a bootstrap/backfill is required, "
-                    "the import is not anchored to a raw meter"
-                )
-            values.append(float(rows[0]["sum"]))
-        return values[0], values[1], None
-
     async def _push(self, statistic_id: str, stats: list[StatRow]) -> None:
         """Write hourly rows into an existing recorder statistics series.
 
@@ -468,7 +431,7 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             "hours_importable": meta.get("hours_importable", 0),
             "skipped_hours": len(skipped),
             "skipped_detail": [f"{hour.isoformat()}: {reason}" for hour, reason in skipped[:5]],
-            "last_error": error or (meta.get("parse_errors") or [None])[0],
+            "last_error": _compose_error(error, meta),
             "parse_failures": meta.get("parse_failures", 0),
         }
         if totals:
@@ -477,6 +440,18 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             for key in ("last_window_from", "last_window_to"):
                 payload[key] = payload[key] or self.data.get(key)
         return payload
+
+
+def _compose_error(error: str | None, meta: dict[str, Any]) -> str | None:
+    """Report the selection problem *and* the parse failure that caused it.
+
+    A run whose archive has a gap often also had a file that would not parse;
+    showing only the gap ("supply complete overlapping files") hides the real
+    cause, which is the unreadable attachment.
+    """
+    parts = [part for part in (error, meta.get("error")) if part]
+    parts.extend(meta.get("parse_errors") or [])
+    return "; ".join(dict.fromkeys(parts)) or None
 
 
 def numeric_rows(statistic_id: str, stats: list[StatRow]) -> list[StatRow]:

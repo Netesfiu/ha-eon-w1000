@@ -208,6 +208,21 @@ def accumulate(
     )
 
 
+def source_history(selection: RunSelection) -> Accumulation:
+    """Rebuild Excel-only sums, including a zero boundary before the first hour.
+
+    This is a consumption counter, not a meter register. The boundary ensures
+    Recorder's change calculation includes the first measured hour.
+    """
+    result = accumulate(selection, 0.0, 0.0)
+    verify_chain(result.import_rows, selection, 0.0, "import")
+    verify_chain(result.export_rows, selection, 0.0, "export")
+    boundary = {"start": selection.anchor_hour.isoformat(), "state": 0.0, "sum": 0.0}
+    result.import_rows.insert(0, dict(boundary))
+    result.export_rows.insert(0, dict(boundary))
+    return result
+
+
 def _kwh(wh: int) -> float:
     """Wh as kWh, as a number (not a formatted string).
 

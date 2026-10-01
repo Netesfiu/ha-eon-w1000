@@ -1,25 +1,17 @@
-"""Sensors for the E.ON W1000 integration.
+"""Historical Energy entities, with exactly one writer: the XLSX importer.
 
-The two energy sensors are *diagnostic views* of the imported series, not a
-second series of their own: the statistics the Energy dashboard consumes are
-imported into the existing ``sensor.grid_energy_import`` / ``..._export``
-series (see ``const.STATISTIC_IMPORT_ID``).  Giving these entities a
-``state_class`` as well would make the recorder start a *second*, competing
-statistics series for every value — which is exactly the duplicate-series mess
-this rework removes — so ``state_class`` is deliberately ``None`` and the
-interesting state (status, window, raw meter register, skips, errors) is exposed
-as attributes.
-
-The entity set (two energy sensors, two diagnostic timestamps) and every
-``unique_id`` are unchanged from the previous version, so the entity registry,
-dashboards and automations keep working across the upgrade.
+Live state stays unknown intentionally: publishing a delayed cumulative total
+as a current numeric state would make Recorder manufacture processing-time
+consumption. The latest Excel total is exposed as historical_total instead.
+The imported has_sum/kWh metadata makes the own series Energy-selectable.
+HA may show an unavailable-live-state warning; historical graphs still work.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
@@ -82,9 +74,9 @@ class EonW1000EnergySensor(CoordinatorEntity[EonW1000Coordinator], SensorEntity)
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = None  # see module docstring: no second statistics series
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = "kWh"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_category = None
 
     def __init__(
         self, coordinator: EonW1000Coordinator, entry: ConfigEntry, key: str
@@ -104,15 +96,15 @@ class EonW1000EnergySensor(CoordinatorEntity[EonW1000Coordinator], SensorEntity)
 
     @property
     def native_value(self) -> float | None:
-        data: dict[str, Any] = self.coordinator.data or {}
-        value = data.get(self._value_key)
-        return round(float(value), 3) if isinstance(value, (int, float)) else None
+        return None  # history is not a measurement at the current time
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         data: dict[str, Any] = self.coordinator.data or {}
         attributes: dict[str, Any] = {
             "statistic_id": self._statistic_id,
+            "historical_total": data.get(self._value_key),
+            "history_source": "excel_only",
             "raw_meter_register": data.get(self._register_key),
         }
         for key in _ATTRIBUTE_KEYS:
