@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/Netesfiu/ha-eon-w1000/issues",
   "loggers": ["custom_components.eon_w1000"],
   "requirements": ["openpyxl>=3.1.0"],
-  "version": "2.0.0"
+  "version": "2.0.1"
 }

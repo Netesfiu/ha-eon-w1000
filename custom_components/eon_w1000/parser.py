@@ -29,6 +29,7 @@ standalone.
 from __future__ import annotations
 
 import logging
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo as _tzinfo
@@ -329,7 +330,13 @@ def parse_eon_xlsx(file_path: str, tzinfo: _tzinfo | None = None) -> ParseResult
     if tzinfo is None:
         tzinfo = datetime.now().astimezone().tzinfo
 
-    workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    # E.ON's exports carry no default cell style, and openpyxl warns about that
+    # on every load.  It is noise in the Home Assistant log, nothing more.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="Workbook contains no default style"
+        )
+        workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     try:
         sheet = workbook.active
         rows = sheet.iter_rows(min_row=1, values_only=True)

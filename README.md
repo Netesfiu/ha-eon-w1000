@@ -109,13 +109,21 @@ Ha `status: no_anchor`, akkor az importálandó ablak előtti utolsó óra nincs
   Ez **méréssel eldöntött** kérdés, nem feltevés: a `+A/-A` sorok napjai a helyesek — a betáplálás (-A) napi összege a rendszer saját napelem-termelésével (független eszköz, a Home Assistant saját órájával) azonos napon **r = +0,944** (123 nap, 2026-05-26 … 2026-09-30), egy nappal eltolva csak **r ≈ +0,43**. Az import a +A/-A sorokat használja, a regisztereket kizárólag diagnosztikára (`raw_meter_register` attribútum, `_last_register`), így ez a jelenség az import értékeit nem érinti.
 * A kumulatív szint a recorderben lévő előző órához igazodik, ezért a fizikai mérőóra-álláshoz képest állandó eltolással állhat (a dashboard a különbségeket mutatja, amikre ez nincs hatással).
 
+## Verzió és migráció
+
+A config entry verziója `2.1`. A 1.x entry-t (korábbi telepítés, visszaállított mentés) az
+`async_migrate_entry` viszi át: a beállításai változatlanok maradnak, csak a két bootstrap kulcs
+(`initial_import`, `initial_export`) kerül bele. A major verziót szándékosan nem emeljük anélkül,
+hogy a migráció kész lenne: a Home Assistant a major eltérésnél megköveteli a migrációs
+handlert, és enélkül az entry **nem tölt be** (`Migration handler not found`).
+
 ## Fejlesztés
 
 ```bash
 python tests/test_core.py     # vagy: pytest tests/
 ```
 
-A tesztek szintetikus, de formahű exportfájlokat használnak (14 oszlop, +A/-A/1.8.0/2.8.0 sorrend, negyedórás sorok, csak éjfélkor kitöltött regiszterek), és lefedik a fenti szabályokat: csonka farok, rés, félig kitöltött csatorna, hiányzó érték, negatív érték, idempotencia, lánc-ellenőrzés, soros/dátum időbélyeg, óraátállítás.
+A tesztek szintetikus, de formahű exportfájlokat használnak (14 oszlop, +A/-A/1.8.0/2.8.0 sorrend, negyedórás sorok, csak éjfélkor kitöltött regiszterek), és lefedik a fenti szabályokat: csonka farok, rés, félig kitöltött csatorna, hiányzó érték, negatív érték, idempotencia, lánc-ellenőrzés, soros/dátum időbélyeg, óraátállítás, valamint hogy a statisztika-sorokban **szám** áll (a `recorder.import_statistics` `state`/`sum` mezője csak `float`/`int` lehet).
 
 ## Licensz
 

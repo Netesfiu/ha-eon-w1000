@@ -10,6 +10,7 @@ Run with ``pytest tests/`` or directly: ``python tests/test_core.py``.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -168,8 +169,8 @@ def test_anchor_accumulation_is_exact_and_idempotent(tmp_path: Path) -> None:
     running = 41_000_000  # Wh, same unit as the accumulation
     for row, hour in zip(stats, selection.hours):
         running += round(hour.ap * 1000)
-        assert row["sum"] == f"{running / 1000:.3f}"
-    assert stats[-1]["sum"] == f"{totals['import_total']:.3f}"
+        assert row["sum"] == round(running / 1000, 3)
+    assert stats[-1]["sum"] == round(totals["import_total"], 3)
 
     reloaded = parser.parse_eon_xlsx(str(path), TZ)
     again = hourly.accumulate(
@@ -178,11 +179,35 @@ def test_anchor_accumulation_is_exact_and_idempotent(tmp_path: Path) -> None:
     assert again == stats
 
 
+def test_statistics_rows_carry_numbers_not_strings(tmp_path: Path) -> None:
+    """The rows must hold numbers: the statistics schema accepts float/int only.
+
+    The first live import failed with ``expected float or int at
+    'stats[0].state'`` because the rows carried formatted strings
+    (``f"{wh / 1000:.3f}"``), which the service schema rejects before the
+    recorder ever sees the row — so the error names a schema path, not the
+    cause.  Strings, Decimal, datetime and bool are all wrong here.
+    """
+    _, _, stats, _ = load(write_export(tmp_path / "week.xlsx"))
+    assert stats
+    for row in stats:
+        assert set(row) == {"start", "state", "sum"}
+        assert isinstance(row["start"], str) and "T" in row["start"]
+        for key in ("state", "sum"):
+            value = row[key]
+            assert isinstance(value, (int, float)) and not isinstance(value, bool), (
+                f"{key} is {type(value).__name__}, not a number"
+            )
+    # The external importer sends the same rows as JSON; nothing exotic may
+    # survive into the payload.
+    assert json.loads(json.dumps(stats)) == stats
+
+
 def test_chain_guard_catches_corruption(tmp_path: Path) -> None:
     _, selection, stats, _ = load(write_export(tmp_path / "week.xlsx"))
     broken = [dict(row) for row in stats]
-    broken[3]["sum"] = "1.000"
-    broken[3]["state"] = "1.000"
+    broken[3]["sum"] = 1.0
+    broken[3]["state"] = 1.0
     try:
         hourly.verify_chain(broken, selection, 41000.0)
     except ValueError:
