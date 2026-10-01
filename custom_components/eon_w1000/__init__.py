@@ -24,17 +24,67 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, PLATFORMS
+from .const import (
+    CONF_INITIAL_EXPORT,
+    CONF_INITIAL_IMPORT,
+    DEFAULT_INITIAL_EXPORT,
+    DEFAULT_INITIAL_IMPORT,
+    DOMAIN,
+    PLATFORMS,
+)
 from .coordinator import EonW1000Coordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_PROCESS_NOW = "process_now"
 
+# Keep in step with EonW1000ConfigFlow.VERSION / MINOR_VERSION.
+ENTRY_VERSION = 2
+ENTRY_MINOR_VERSION = 1
+
 CONFIG_SCHEMA = vol.Schema({DOMAIN: vol.Schema({})}, extra=vol.ALLOW_EXTRA)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate an entry created before 2.0.
+
+    The config schema is unchanged; 2.0 only added the two bootstrap keys the
+    entry keeps for compatibility (the cumulative series is anchored to the
+    recorder and is never seeded from them).  Home Assistant tolerates a minor
+    mismatch on its own but refuses to load an entry whose major version it
+    cannot migrate, so this handler has to exist for the 1.x entry to survive
+    the upgrade — and for that failure mode to stay impossible later.
+    """
+    if entry.version > ENTRY_VERSION:
+        _LOGGER.error(
+            "E.ON W1000 entry %s was written by a newer version (%s.%s) than this "
+            "integration implements (%s.%s); refusing to migrate it",
+            entry.entry_id,
+            entry.version,
+            entry.minor_version,
+            ENTRY_VERSION,
+            ENTRY_MINOR_VERSION,
+        )
+        return False
+
+    data = dict(entry.data)
+    data.setdefault(CONF_INITIAL_IMPORT, DEFAULT_INITIAL_IMPORT)
+    data.setdefault(CONF_INITIAL_EXPORT, DEFAULT_INITIAL_EXPORT)
+    hass.config_entries.async_update_entry(
+        entry, data=data, version=ENTRY_VERSION, minor_version=ENTRY_MINOR_VERSION
+    )
+    _LOGGER.info(
+        "Migrated E.ON W1000 entry %s from version %s.%s to %s.%s",
+        entry.entry_id,
+        entry.version,
+        entry.minor_version,
+        ENTRY_VERSION,
+        ENTRY_MINOR_VERSION,
+    )
     return True
 
 

@@ -106,7 +106,13 @@ async def _validate(hass, user_input: dict[str, Any]) -> str | None:
 class EonW1000ConfigFlow(ConfigFlow, domain=DOMAIN):
     """Initial setup."""
 
+    # 2.0 adds the two bootstrap keys to the entry data (the schema itself is
+    # unchanged), so the version stays at 2 and ``async_migrate_entry`` brings a
+    # 1.x entry over.  Home Assistant tolerates a *minor* mismatch without a
+    # handler but a *major* one needs it, and without it the entry refuses to
+    # load entirely ("Migration handler not found").
     VERSION = 2
+    MINOR_VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}

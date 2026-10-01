@@ -19,8 +19,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 
 from .parser import ParsedHour
+
+# ``recorder.import_statistics`` validates ``stats[].state``/``sum`` as ``float``
+# or ``int``; a formatted string is rejected by the schema before the recorder
+# ever sees the row, so the rows carry plain numbers.
+StatRow = dict[str, Any]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -146,7 +152,7 @@ def accumulate(
     selection: RunSelection,
     anchor_import_kwh: float,
     anchor_export_kwh: float,
-) -> tuple[list[dict[str, str]], dict[str, float]]:
+) -> tuple[list[StatRow], dict[str, float]]:
     """Accumulate the run from the preceding persisted hour, in integer Wh.
 
     Returns ``(stats, totals)`` where ``stats`` rows are shaped for
@@ -160,7 +166,7 @@ def accumulate(
     running_import = int(round(anchor_import_kwh * 1000))
     running_export = int(round(anchor_export_kwh * 1000))
 
-    stats: list[dict[str, str]] = []
+    stats: list[StatRow] = []
     for hour in selection.hours:
         running_import += int(round((hour.ap or 0.0) * 1000))
         running_export += int(round((hour.am or 0.0) * 1000))
@@ -182,11 +188,17 @@ def accumulate(
     return stats, totals
 
 
-def _kwh(wh: int) -> str:
-    return f"{wh / 1000:.3f}"
+def _kwh(wh: int) -> float:
+    """Wh as kWh, as a number (not a formatted string).
+
+    The statistics writer requires ``float``/``int``; returning a string here is
+    what made the very first live import fail with
+    ``expected float or int at 'stats[0].state'``.
+    """
+    return round(wh / 1000, 3)
 
 
-def verify_chain(stats: list[dict[str, str]], selection: RunSelection, anchor_import: float) -> None:
+def verify_chain(stats: list[StatRow], selection: RunSelection, anchor_import: float) -> None:
     """Fail loudly if the produced chain is not exactly the source energies.
 
     Regression guard for the seam bug: every consecutive pair must differ by the

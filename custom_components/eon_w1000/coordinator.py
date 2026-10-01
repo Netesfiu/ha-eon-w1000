@@ -39,7 +39,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .hourly import RunSelection, accumulate, select_run, verify_chain
+from .hourly import RunSelection, StatRow, accumulate, select_run, verify_chain
 from .imap_client import ImapClient, ImapError, MailAttachment, MailMessage
 from .parser import ParsedHour, parse_eon_xlsx
 
@@ -352,7 +352,7 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             values.append(float(rows[0]["sum"]))
         return values[0], values[1], None
 
-    async def _push(self, statistic_id: str, stats: list[dict[str, str]]) -> None:
+    async def _push(self, statistic_id: str, stats: list[StatRow]) -> None:
         """Write hourly rows into an existing recorder statistics series.
 
         The primary path is the ``recorder.import_statistics`` service — the very
@@ -363,13 +363,14 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         ``async_import_statistics``, which needs aware ``datetime`` starts rather
         than the ISO strings the service takes.
         """
+        rows = numeric_rows(statistic_id, stats)
         payload = {
             "statistic_id": statistic_id,
             "source": STATISTIC_SOURCE,
             "unit_of_measurement": "kWh",
             "has_mean": False,
             "has_sum": True,
-            "stats": stats,
+            "stats": rows,
         }
         if self.hass.services.has_service("recorder", "import_statistics"):
             await self.hass.services.async_call(
@@ -382,10 +383,10 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             "writing %s through the recorder API instead",
             statistic_id,
         )
-        await self._push_via_recorder_api(statistic_id, stats)
+        await self._push_via_recorder_api(statistic_id, rows)
 
     async def _push_via_recorder_api(
-        self, statistic_id: str, stats: list[dict[str, str]]
+        self, statistic_id: str, stats: list[StatRow]
     ) -> None:
         from homeassistant.components.recorder.models import StatisticMeanType
         from homeassistant.components.recorder.statistics import async_import_statistics
@@ -452,6 +453,32 @@ class EonW1000Coordinator(DataUpdateCoordinator[dict[str, Any]]):
             for key in ("last_window_from", "last_window_to"):
                 payload[key] = payload[key] or self.data.get(key)
         return payload
+
+
+def numeric_rows(statistic_id: str, stats: list[StatRow]) -> list[StatRow]:
+    """Return statistics rows whose ``state``/``sum`` are real numbers.
+
+    ``recorder.import_statistics`` validates them as ``float`` or ``int``, so a
+    formatted string never reaches the recorder: the service schema rejects the
+    whole call with ``expected float or int at 'stats[0].state'``, which says
+    nothing about where the string came from.  Raise here instead, naming the
+    row and the offending value.
+    """
+    rows: list[StatRow] = []
+    for row in stats:
+        state = row["state"]
+        total = row["sum"]
+        for label, value in (("state", state), ("sum", total)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{statistic_id}: row {row.get('start')!r} has a non-numeric "
+                    f"{label} ({value!r}, {type(value).__name__}); the statistics "
+                    "writer accepts only float/int"
+                )
+        rows.append(
+            {"start": str(row.get("start")), "state": float(state), "sum": float(total)}
+        )
+    return rows
 
 
 def _last_register(hours: dict[datetime, ParsedHour], attribute: str) -> float | None:
