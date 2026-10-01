@@ -66,8 +66,8 @@ Az [E.ON portálon](https://e-portal.eon-hungaria.com/w1000) állíts be egy üt
 
 | Entitás | Leírás |
 |---|---|
-| `sensor.eon_w1000_grid_import` | Saját energia sorozat (`..._import`), a legutóbbi importált Excel összeggel |
-| `sensor.eon_w1000_grid_export` | Saját energia sorozat (`..._export`), a legutóbbi importált Excel összeggel |
+| `sensor.eon_w1000_eon_w1000_grid_import` | Saját energia sorozat (`..._import`), a legutóbbi importált Excel összeggel |
+| `sensor.eon_w1000_eon_w1000_grid_export` | Saját energia sorozat (`..._export`), a legutóbbi importált Excel összeggel |
 | `sensor.eon_w1000_last_update` | Utolsó postafiók-ellenőrzés |
 | `sensor.eon_w1000_last_processing` | Utolsó sikeres import |
 | `button.eon_w1000_process_now` | Azonnali postafiók-ellenőrzés |
@@ -112,7 +112,7 @@ data:
 2. HACS → frissítés erre a verzióra → HA újraindítás.
 3. Az Energy felületen **állítsd át a forrásokat** a saját sorozatokra (lásd fent), és vedd ki a régi `sensor.grid_energy_*` bejegyzéseket a kijelölésből. A mögöttük lévő 2026. máj.–júl. előzmény a rekorderben **megmarad**, csak nem lesz kijelölve — az integráció hozzá sem nyúl.
 4. Ha az őszi levelek már nincsenek a postafiókban, futtasd a `eon_w1000.import_files` szolgáltatást a meglévő XLSX-ekre; egyébként nyomd meg a **Process export mail now** gombot (vagy várd meg a következő kört).
-5. Ellenőrizd a `sensor.eon_w1000_grid_import` attribútumait: `status: ok`, `skipped_hours: 0`, `historical_total` a legutóbbi Excel összeggel. Az energia felületen a fogyasztás és a visszatáplálás **külön görbe** kell legyen (a korábbi hiba épp az volt, hogy a betáplálás sorozatba a vételezés lánca került).
+5. Ellenőrizd a `sensor.eon_w1000_eon_w1000_grid_import` attribútumait: `status: ok`, `skipped_hours: 0`, `historical_total` a legutóbbi Excel összeggel. Az energia felületen a fogyasztás és a visszatáplálás **külön görbe** kell legyen (a korábbi hiba épp az volt, hogy a betáplálás sorozatba a vételezés lánca került).
 
 `status: no_data` + `last_error` esetén az archívumban rés vagy csonka óra van: egészítsd ki a hiányzó XLSX-szel, majd futtasd újra (a művelet idempotens).
 
