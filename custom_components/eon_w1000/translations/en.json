@@ -53,7 +53,7 @@
   "entity": {
     "sensor": {
       "grid_import": {
-        "name": "Grid import total",
+        "name": "Grid import total (Excel history)",
         "state_attributes": {
           "statistic_id": {
             "name": "Statistics series written"
@@ -84,11 +84,14 @@
           },
           "duplicate_hours": {
             "name": "Ambiguous hours"
+          },
+          "historical_total": {
+            "name": "Last imported Excel total (kWh)"
           }
         }
       },
       "grid_export": {
-        "name": "Grid export total",
+        "name": "Grid export total (Excel history)",
         "state_attributes": {
           "statistic_id": {
             "name": "Statistics series written"
@@ -119,6 +122,9 @@
           },
           "duplicate_hours": {
             "name": "Ambiguous hours"
+          },
+          "historical_total": {
+            "name": "Last imported Excel total (kWh)"
           }
         }
       },
@@ -139,6 +145,10 @@
     "process_now": {
       "name": "Process now",
       "description": "Check the mailbox immediately and import the newest export mail."
+    },
+    "import_files": {
+      "name": "Import XLSX files",
+      "description": "Backfill the E.ON W1000 history from local XLSX export files."
     }
   }
 }

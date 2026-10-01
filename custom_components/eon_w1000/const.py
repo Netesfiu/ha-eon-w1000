@@ -25,14 +25,9 @@ DEFAULT_INITIAL_IMPORT = 0.0
 DEFAULT_INITIAL_EXPORT = 0.0
 
 # --- Statistics target -------------------------------------------------------
-# The long-term statistics series that the Energy dashboard already consumes.
-# For a sensor entity HA keys its statistics by the *entity_id*, and these two
-# entity_ids (template helpers) are what `energy/get_prefs` points at.  Writing
-# the imported hourly rows into that same series is what makes the replacement
-# of the previous importer seam-free: the anchor hour is read back from the very
-# series we write to.
-STATISTIC_IMPORT_ID = "sensor.grid_energy_import"
-STATISTIC_EXPORT_ID = "sensor.grid_energy_export"
+# Own Excel-only series; legacy grid_energy statistics are never read or written.
+STATISTIC_IMPORT_ID = "sensor.eon_w1000_eon_w1000_grid_import"
+STATISTIC_EXPORT_ID = "sensor.eon_w1000_eon_w1000_grid_export"
 STATISTIC_SOURCE = "recorder"
 
 # Sensor keys (entity unique_ids, deliberately kept stable across releases)
@@ -43,7 +38,7 @@ SENSOR_LAST_PROCESSING = "last_processing"
 
 # Storage
 STORAGE_VERSION = 2
-STORAGE_KEY = "eon_w1000_state"
+STORAGE_KEY = "eon_w1000_excel_history"
 
 # Mail intake
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024

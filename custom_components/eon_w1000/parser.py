@@ -345,7 +345,7 @@ def parse_eon_xlsx(file_path: str, tzinfo: _tzinfo | None = None) -> ParseResult
         if export_format == "new":
             pieces = _read_new_format(rows, header, tzinfo)
         elif export_format == "old_wide":
-            pieces = _read_old_wide_format(rows, header, tzinfo)
+            raise ValueError("old_wide format is not supported for Excel-only history: per-variable rows are not quarter-hour slots")
         else:
             pieces = _read_legacy_format(rows, header, tzinfo)
     finally:

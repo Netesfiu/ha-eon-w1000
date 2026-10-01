@@ -53,7 +53,7 @@
   "entity": {
     "sensor": {
       "grid_import": {
-        "name": "Hálózati vételezés összesen",
+        "name": "Hálózati vételezés összesen (Excel előzmény)",
         "state_attributes": {
           "statistic_id": {
             "name": "Írt statisztika sorozat"
@@ -84,11 +84,14 @@
           },
           "duplicate_hours": {
             "name": "Kétértelmű órák"
+          },
+          "historical_total": {
+            "name": "Legutóbb importált Excel összeg (kWh)"
           }
         }
       },
       "grid_export": {
-        "name": "Hálózati betáplálás összesen",
+        "name": "Hálózati betáplálás összesen (Excel előzmény)",
         "state_attributes": {
           "statistic_id": {
             "name": "Írt statisztika sorozat"
@@ -119,6 +122,9 @@
           },
           "duplicate_hours": {
             "name": "Kétértelmű órák"
+          },
+          "historical_total": {
+            "name": "Legutóbb importált Excel összeg (kWh)"
           }
         }
       },
@@ -139,6 +145,10 @@
     "process_now": {
       "name": "Feldolgozás most",
       "description": "Azonnali postafiók-ellenőrzés és a legfrissebb export levél importálása."
+    },
+    "import_files": {
+      "name": "XLSX fájlok importálása",
+      "description": "Az E.ON W1000 előzmény feltöltése helyi XLSX exportfájlokból."
     }
   }
 }

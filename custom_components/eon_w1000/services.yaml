@@ -1,3 +1,19 @@
 process_now:
   name: Process now
   description: Check the mailbox immediately and import the newest E.ON W1000 export mail.
+
+import_files:
+  name: Import XLSX files
+  description: >-
+    Backfill the E.ON W1000 history from local XLSX export files. The files are
+    merged into the integration's own Excel archive and written as one complete
+    hourly series; existing legacy grid_energy statistics are never touched.
+  fields:
+    paths:
+      name: File paths
+      description: Absolute paths of the E.ON W1000 XLSX export files.
+      required: true
+      example: /config/eon/2026-05-19.xlsx
+      selector:
+        text:
+          multiple: true
