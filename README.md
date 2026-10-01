@@ -104,7 +104,9 @@ Ha `status: no_anchor`, akkor az importálandó ablak előtti utolsó óra nincs
 ## Korlátok
 
 * **Őszi óraátállítás.** A helyi idő szerint címkézett fájlban az óraátállítás napján a 02:00 óra kétszer szerepel, így abban a vödörben két fizikai óra energiája lesz. Az energia nem vész el (minden negyedóra beleszámít), de az az egy nap órás bontása eltolódik; az integráció ezt `duplicate_hours`-ként jelzi.
-* **A fájl 1.8.0/2.8.0 regiszterei és a +A/-A sorok napjai.** A valós exportokban a mérőóra-regiszter csak minden nap 00:00 sorában van kitöltve, és a regiszterek naptári napjai egy nappal eltérnek a +A/-A sorok címkéitől (a napi összegek pontosan egybeesnek, ha a regisztereket egy nappal eltolva párosítjuk; közvetlenül párosítva 0,4–10 kWh eltérés adódik). Az import a +A/-A sorokat használja, a regisztereket csak diagnosztikára; a jelenség a portál oldalán értelmezendő.
+* **A fájl 1.8.0/2.8.0 regiszterei és a +A/-A sorok napjai.** A valós exportokban a mérőóra-regiszter csak minden nap 00:00 sorában van kitöltve, és a **regiszter-oszlop** naptári napjai egy nappal eltérnek a +A/-A sorok címkéitől: a `D` nap 00:00 sorában álló mérőállás valójában a `D` nap **záró** értéke (azaz a `D+1` 00:00-kor mért állás). Ezért a napi fogyasztás `R(D) − R(D−1)`, és nem `R(D+1) − R(D)`; közvetlenül párosítva 0,4–10 kWh eltérés adódik, a helyes párosítással 0,001 kWh.
+
+  Ez **méréssel eldöntött** kérdés, nem feltevés: a `+A/-A` sorok napjai a helyesek — a betáplálás (-A) napi összege a rendszer saját napelem-termelésével (független eszköz, a Home Assistant saját órájával) azonos napon **r = +0,944** (123 nap, 2026-05-26 … 2026-09-30), egy nappal eltolva csak **r ≈ +0,43**. Az import a +A/-A sorokat használja, a regisztereket kizárólag diagnosztikára (`raw_meter_register` attribútum, `_last_register`), így ez a jelenség az import értékeit nem érinti.
 * A kumulatív szint a recorderben lévő előző órához igazodik, ezért a fizikai mérőóra-álláshoz képest állandó eltolással állhat (a dashboard a különbségeket mutatja, amikre ez nincs hatással).
 
 ## Fejlesztés
